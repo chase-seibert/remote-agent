@@ -58,7 +58,8 @@ final class RemoteAPIClientTests: XCTestCase {
             "createdAt":"2026-07-11T20:00:01Z",
             "state":"complete"
           }],
-          "isRunning":false
+          "isRunning":true,
+          "currentReasoning":"Inspecting the session pipeline."
         }
         """
       return (
@@ -71,6 +72,8 @@ final class RemoteAPIClientTests: XCTestCase {
     XCTAssertEqual(result.id, sessionID)
     XCTAssertEqual(result.messages.first?.id, messageID)
     XCTAssertEqual(result.messages.first?.text, "Done")
+    XCTAssertTrue(result.isRunning)
+    XCTAssertEqual(result.currentReasoning, "Inspecting the session pipeline.")
     XCTAssertFalse(result.isUnread)
     XCTAssertFalse(result.isPinned)
   }

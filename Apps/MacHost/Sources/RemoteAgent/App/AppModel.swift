@@ -24,11 +24,16 @@ final class AppModel: ObservableObject {
   @Published private(set) var apiStatus = "API stopped"
   @Published private(set) var crashRelaunchStatus = "Not configured"
   @Published private(set) var apiActivityLog: [APIActivityEntry] = []
+  @Published private(set) var projectCommandResults: [UUID: ProjectCommandResult] = [:]
+  @Published private(set) var runningProjectCommandSessionIDs: Set<UUID> = []
+  @Published private(set) var selectedMakeTargets: [UUID: String] = [:]
   @Published var presentedError: String?
 
   let settings: AppSettings
   private let store: SessionStore
   private let activityStore: APIActivityStore
+  private let projectCommandResultStore: ProjectCommandResultStore
+  private let projectCommands: ProjectCommandService
   private let scanner = ProjectScanner()
   private let codex = CodexCLIClient()
   private let documents = ProjectDocumentService()
@@ -40,11 +45,15 @@ final class AppModel: ObservableObject {
   init(
     settings: AppSettings,
     store: SessionStore = SessionStore(),
-    activityStore: APIActivityStore = APIActivityStore()
+    activityStore: APIActivityStore = APIActivityStore(),
+    projectCommandResultStore: ProjectCommandResultStore = ProjectCommandResultStore(),
+    projectCommands: ProjectCommandService = ProjectCommandService()
   ) {
     self.settings = settings
     self.store = store
     self.activityStore = activityStore
+    self.projectCommandResultStore = projectCommandResultStore
+    self.projectCommands = projectCommands
   }
 
   var selectedProject: AgentProject? {
@@ -76,10 +85,51 @@ final class AppModel: ObservableObject {
       sessions = try await store.load()
       for index in sessions.indices {
         sessions[index].isRunning = false
+        sessions[index].currentReasoning = nil
       }
       persist()
     } catch {
       presentedError = "Could not load saved sessions: \(error.localizedDescription)"
+    }
+    do {
+      let results = try await projectCommandResultStore.load()
+      let messageIDs = Set(sessions.flatMap(\.messages).map(\.id))
+      var repairedInterruptedCommand = false
+      let retainedResults = results.filter { messageIDs.contains($0.id) }.map { result in
+        guard result.isRunning else { return result }
+        repairedInterruptedCommand = true
+        let completedAt = Date()
+        if let sessionIndex = sessions.firstIndex(where: { $0.id == result.sessionID }),
+          let messageIndex = sessions[sessionIndex].messages.firstIndex(where: {
+            $0.id == result.id
+          })
+        {
+          sessions[sessionIndex].messages[messageIndex].text =
+            "\(result.title) was interrupted. Click to view output."
+          sessions[sessionIndex].messages[messageIndex].state = .failed
+          sessions[sessionIndex].updatedAt = completedAt
+        }
+        return ProjectCommandResult(
+          id: result.id,
+          sessionID: result.sessionID,
+          projectPath: result.projectPath,
+          kind: result.kind,
+          title: result.title,
+          command: result.command,
+          output: "Command was interrupted because Remote Agent stopped before it completed.",
+          exitCode: nil,
+          startedAt: result.startedAt,
+          completedAt: completedAt
+        )
+      }
+      projectCommandResults = Dictionary(
+        retainedResults.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      if retainedResults.count != results.count || repairedInterruptedCommand {
+        try await projectCommandResultStore.save(retainedResults)
+      }
+      if repairedInterruptedCommand { persist() }
+    } catch {
+      presentedError = "Could not load project command results: \(error.localizedDescription)"
     }
     do {
       apiActivityLog = try await activityStore.load()
@@ -168,10 +218,16 @@ final class AppModel: ObservableObject {
     guard let index = sessions.firstIndex(where: { $0.id == id }) else {
       throw RemoteAgentError.sessionNotFound
     }
-    guard !sessions[index].isRunning else {
+    guard !sessions[index].isRunning,
+      !runningProjectCommandSessionIDs.contains(id)
+    else {
       throw RemoteAgentError.sessionBusy
     }
     let deleted = sessions.remove(at: index)
+    selectedMakeTargets.removeValue(forKey: id)
+    settings.clearSelectedMakeTarget(sessionID: id)
+    projectCommandResults = projectCommandResults.filter { $0.value.sessionID != id }
+    persistProjectCommandResults()
     if selectedSessionID == id { selectSession(recentSessions.first?.id) }
     persist()
     return deleted
@@ -212,7 +268,9 @@ final class AppModel: ObservableObject {
       presentedError = RemoteAgentError.sessionNotFound.localizedDescription
       return
     }
-    guard !sessions[index].isRunning else {
+    guard !sessions[index].isRunning,
+      !runningProjectCommandSessionIDs.contains(id)
+    else {
       presentedError = RemoteAgentError.sessionBusy.localizedDescription
       return
     }
@@ -223,6 +281,7 @@ final class AppModel: ObservableObject {
     }
     sessions[index].messages.append(AgentMessage(role: .user, text: trimmed))
     sessions[index].isRunning = true
+    sessions[index].currentReasoning = nil
     sessions[index].isUnread = false
     sessions[index].updatedAt = Date()
     let projectPath = sessions[index].projectPath
@@ -234,7 +293,13 @@ final class AppModel: ObservableObject {
         prompt: trimmed,
         projectPath: projectPath,
         existingSessionID: codexSessionID,
-        configuredExecutable: settings.codexPath
+        configuredExecutable: settings.codexPath,
+        onEvent: { [weak self] event in
+          guard let reasoning = event.reasoningText else { return }
+          Task { @MainActor [weak self] in
+            self?.updateCurrentReasoning(reasoning, sessionID: id)
+          }
+        }
       )
       guard let updatedIndex = sessions.firstIndex(where: { $0.id == id }) else { return }
       sessions[updatedIndex].codexSessionID = result.sessionID
@@ -242,6 +307,7 @@ final class AppModel: ObservableObject {
         AgentMessage(role: .assistant, text: result.response)
       )
       sessions[updatedIndex].isRunning = false
+      sessions[updatedIndex].currentReasoning = nil
       sessions[updatedIndex].isUnread = selectedSessionID != id || !NSApp.isActive
       sessions[updatedIndex].updatedAt = Date()
       persist()
@@ -255,10 +321,228 @@ final class AppModel: ObservableObject {
         )
       )
       sessions[updatedIndex].isRunning = false
+      sessions[updatedIndex].currentReasoning = nil
       sessions[updatedIndex].isUnread = selectedSessionID != id || !NSApp.isActive
       sessions[updatedIndex].updatedAt = Date()
       persist()
       presentedError = error.localizedDescription
+    }
+  }
+
+  private func updateCurrentReasoning(_ reasoning: String, sessionID: UUID) {
+    guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+      sessions[index].isRunning
+    else { return }
+    sessions[index].currentReasoning = reasoning
+  }
+
+  func makeTargets(for session: AgentSession) -> [String] {
+    MakeTargetDiscovery.targets(projectPath: session.projectPath)
+  }
+
+  func activeMakeTarget(for session: AgentSession) -> String? {
+    let targets = makeTargets(for: session)
+    guard !targets.isEmpty else { return nil }
+    let selected =
+      selectedMakeTargets[session.id]
+      ?? settings.selectedMakeTarget(sessionID: session.id)
+    if let selected, targets.contains(selected) { return selected }
+    return ["build", "test", "run"].first(where: targets.contains) ?? targets.first
+  }
+
+  func selectMakeTarget(_ target: String, for session: AgentSession) {
+    guard makeTargets(for: session).contains(target) else { return }
+    selectedMakeTargets[session.id] = target
+    settings.setSelectedMakeTarget(target, sessionID: session.id)
+  }
+
+  func projectCommandResult(messageID: UUID) -> ProjectCommandResult? {
+    projectCommandResults[messageID]
+  }
+
+  func isProjectCommandRunning(sessionID: UUID) -> Bool {
+    runningProjectCommandSessionIDs.contains(sessionID)
+  }
+
+  func runActiveMakeTarget(sessionID: UUID) async {
+    guard let session = sessions.first(where: { $0.id == sessionID }),
+      let target = activeMakeTarget(for: session)
+    else {
+      presentedError = "No Makefile targets are available for this project."
+      return
+    }
+    selectMakeTarget(target, for: session)
+    await runProjectCommand(sessionID: sessionID, action: .make(target))
+  }
+
+  func runGitCommit(sessionID: UUID) async {
+    await runProjectCommand(sessionID: sessionID, action: .gitCommit)
+  }
+
+  func runGitPush(sessionID: UUID) async {
+    await runProjectCommand(sessionID: sessionID, action: .gitPush)
+  }
+
+  private enum ProjectCommandAction {
+    case make(String)
+    case gitCommit
+    case gitPush
+
+    var descriptor: ProjectCommandDescriptor {
+      switch self {
+      case .make(let target):
+        ProjectCommandDescriptor(
+          kind: .make,
+          title: "Make \(target)",
+          command: "make \(target)",
+          runningText: "Running make \(target)… Click to view output."
+        )
+      case .gitCommit:
+        ProjectCommandDescriptor(
+          kind: .gitCommit,
+          title: "Git Commit",
+          command: "git add --all && git commit",
+          runningText: "Running git add and commit… Click to view output."
+        )
+      case .gitPush:
+        ProjectCommandDescriptor(
+          kind: .gitPush,
+          title: "Git Push",
+          command: "git push",
+          runningText: "Running git push… Click to view output."
+        )
+      }
+    }
+  }
+
+  private struct ProjectCommandDescriptor {
+    let kind: ProjectCommandKind
+    let title: String
+    let command: String
+    let runningText: String
+  }
+
+  private func runProjectCommand(sessionID: UUID, action: ProjectCommandAction) async {
+    guard let session = sessions.first(where: { $0.id == sessionID }) else {
+      presentedError = RemoteAgentError.sessionNotFound.localizedDescription
+      return
+    }
+    guard !session.isRunning else {
+      presentedError = "Wait for the agent turn to finish before running a project command."
+      return
+    }
+    guard !runningProjectCommandSessionIDs.contains(sessionID) else { return }
+    runningProjectCommandSessionIDs.insert(sessionID)
+    defer { runningProjectCommandSessionIDs.remove(sessionID) }
+
+    guard
+      let messageID = await recordProjectCommandStarted(
+        action.descriptor,
+        sessionID: sessionID,
+        projectPath: session.projectPath
+      )
+    else { return }
+
+    let outcome: ProjectCommandOutcome
+    switch action {
+    case .make(let target):
+      outcome = await projectCommands.runMake(target: target, projectPath: session.projectPath)
+    case .gitCommit:
+      outcome = await projectCommands.runGitCommit(projectPath: session.projectPath)
+    case .gitPush:
+      outcome = await projectCommands.runGitPush(projectPath: session.projectPath)
+    }
+    await recordProjectCommandFinished(
+      outcome,
+      messageID: messageID,
+      sessionID: sessionID,
+      projectPath: session.projectPath
+    )
+  }
+
+  private func recordProjectCommandStarted(
+    _ descriptor: ProjectCommandDescriptor,
+    sessionID: UUID,
+    projectPath: String
+  ) async -> UUID? {
+    guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return nil }
+    let startedAt = Date()
+    let messageID = UUID()
+    projectCommandResults[messageID] = ProjectCommandResult(
+      id: messageID,
+      sessionID: sessionID,
+      projectPath: projectPath,
+      kind: descriptor.kind,
+      title: descriptor.title,
+      command: descriptor.command,
+      output: "Command is running. Output will appear here when it completes.",
+      exitCode: nil,
+      startedAt: startedAt,
+      completedAt: nil
+    )
+    sessions[index].messages.append(
+      AgentMessage(
+        id: messageID,
+        role: .system,
+        text: descriptor.runningText,
+        createdAt: startedAt,
+        state: .pending
+      )
+    )
+    sessions[index].updatedAt = startedAt
+    sessions[index].isUnread = false
+    persist()
+    do {
+      try await projectCommandResultStore.save(Array(projectCommandResults.values))
+    } catch {
+      presentedError = "Could not save project command output: \(error.localizedDescription)"
+    }
+    return messageID
+  }
+
+  private func recordProjectCommandFinished(
+    _ outcome: ProjectCommandOutcome,
+    messageID: UUID,
+    sessionID: UUID,
+    projectPath: String
+  ) async {
+    guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+      let messageIndex = sessions[index].messages.firstIndex(where: { $0.id == messageID })
+    else { return }
+    let result = ProjectCommandResult(
+      id: messageID,
+      sessionID: sessionID,
+      projectPath: projectPath,
+      kind: outcome.kind,
+      title: outcome.title,
+      command: outcome.command,
+      output: outcome.output,
+      exitCode: outcome.exitCode,
+      startedAt: outcome.startedAt,
+      completedAt: outcome.completedAt
+    )
+    projectCommandResults[messageID] = result
+    sessions[index].messages[messageIndex].text = placeholderText(for: outcome)
+    sessions[index].messages[messageIndex].state = outcome.succeeded ? .complete : .failed
+    sessions[index].updatedAt = outcome.completedAt
+    sessions[index].isUnread = selectedSessionID != sessionID || NSApp?.isActive != true
+    persist()
+    do {
+      try await projectCommandResultStore.save(Array(projectCommandResults.values))
+    } catch {
+      presentedError = "Could not save project command output: \(error.localizedDescription)"
+    }
+  }
+
+  private func placeholderText(for outcome: ProjectCommandOutcome) -> String {
+    let status = outcome.succeeded ? "succeeded" : "failed"
+    switch outcome.kind {
+    case .make:
+      return "\(outcome.title) \(status). Click to view output."
+    case .gitCommit:
+      return "\(outcome.title) \(status). Click to view output."
+    case .gitPush:
+      return "Git push \(status). Click to view output."
     }
   }
 
@@ -421,7 +705,9 @@ final class AppModel: ObservableObject {
         }
       }
       if request.method == "DELETE", parts.count == 3 {
-        guard !session.isRunning else {
+        guard !session.isRunning,
+          !runningProjectCommandSessionIDs.contains(sessionID)
+        else {
           return .json(APIErrorBody(error: "Session is busy"), status: 409)
         }
         do {
@@ -438,7 +724,9 @@ final class AppModel: ObservableObject {
         return .json(updated)
       }
       if request.method == "POST", parts.count == 4, parts[3] == "messages" {
-        guard !session.isRunning else {
+        guard !session.isRunning,
+          !runningProjectCommandSessionIDs.contains(sessionID)
+        else {
           return .json(APIErrorBody(error: "Session is busy"), status: 409)
         }
         guard let body = try? JSONDecoder().decode(SendMessageBody.self, from: request.body),
@@ -505,6 +793,15 @@ final class AppModel: ObservableObject {
     Task {
       do { try await activityStore.save(snapshot) } catch {
         presentedError = "Could not save API activity: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  private func persistProjectCommandResults() {
+    let snapshot = Array(projectCommandResults.values)
+    Task {
+      do { try await projectCommandResultStore.save(snapshot) } catch {
+        presentedError = "Could not save project command output: \(error.localizedDescription)"
       }
     }
   }

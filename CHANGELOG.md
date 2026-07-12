@@ -6,6 +6,8 @@
 
 ### Mac Host
 
+- Added project command controls with a per-session remembered Make target split button, separate Git Commit and Push actions, on-device Apple Foundation Models commit-message generation, and clickable live-status transcript placeholders backed by private scrollable command-output sheets. Commit now stages and commits the entire working tree in one action.
+- Added live Codex reasoning-summary display during active turns, replacing the prior summary in place and clearing it when the final response arrives.
 - Made the main window and application process single-instance while retaining separate document preview windows.
 - Added persisted session pinning with pinned-first ordering and confirmed deletion that protects running sessions in the Mac app, plus authenticated `PATCH` and `DELETE` API support for mobile clients.
 - Matched the companion iOS visual language with a green mobile-active checkmark, aligned chat bubbles, icon-bearing unread pills, and the rotating green agent-working treatment.
@@ -19,6 +21,9 @@
 
 ### iOS
 
+- Shortened the session deletion confirmation button to “Delete,” keeping long session titles in the dialog message instead of the action label.
+- Fixed foreground restoration so an already-visible session is marked read after its refreshed unread state arrives, without requiring the user to leave and reopen it.
+- Added the host's current reasoning summary to running conversations through the existing active-turn polling flow; the transient summary is replaced in place and removed at completion.
 - Added pinned-first session ordering plus Pin/Unpin and confirmed Delete actions backed by the Mac host API; running sessions remain protected from deletion.
 - Added production-navigation fixtures and XCUITest integration coverage proving 120-message sessions open at the bottom after direct restoration, global-list navigation, and switching from another session; fixed the switch-path race by scrolling again when the system navigation animation completes.
 - Added a conversation-toolbar compose button that creates and opens a new session in the current project.

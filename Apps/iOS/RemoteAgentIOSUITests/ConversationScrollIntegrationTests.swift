@@ -28,6 +28,25 @@ final class ConversationScrollIntegrationTests: XCTestCase {
     assertLatestMessageVisible(in: app)
   }
 
+  func testDeleteConfirmationUsesCompactActionLabel() {
+    let app = launch(fixture: "recent-sessions")
+    let session = app.staticTexts["Update project documentation"].firstMatch
+    XCTAssertTrue(session.waitForExistence(timeout: 5))
+
+    session.swipeLeft()
+    let deleteAction = app.buttons["Delete"].firstMatch
+    XCTAssertTrue(deleteAction.waitForExistence(timeout: 2))
+    deleteAction.tap()
+
+    let dialog = app.sheets.firstMatch
+    XCTAssertTrue(dialog.waitForExistence(timeout: 2))
+    XCTAssertTrue(dialog.buttons["Delete"].exists)
+    XCTAssertFalse(
+      dialog.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Delete “")).firstMatch
+        .exists
+    )
+  }
+
   private func launch(fixture: String) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment["REMOTE_AGENT_FIXTURE"] = fixture

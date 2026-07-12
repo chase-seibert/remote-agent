@@ -196,6 +196,25 @@ final class UnreadBadgeTests: XCTestCase {
     XCTAssertEqual(badgeCounts, [1, 0])
   }
 
+  func testForegroundRefreshMarksAlreadyVisibleSessionRead() async {
+    let previouslyRead = makeSession(isUnread: false)
+    var unreadOnServer = previouslyRead
+    unreadOnServer.isUnread = true
+    let client = ForegroundUnreadAPIClient(session: unreadOnServer)
+    let notifications = BadgeRecordingNotificationService()
+    let model = makeModel(
+      sessions: [previouslyRead],
+      client: client,
+      notifications: notifications
+    )
+
+    await model.refreshForForeground()
+
+    XCTAssertFalse(model.selectedSession?.isUnread ?? true)
+    let markedSessionIDs = await client.markedSessionIDs
+    XCTAssertEqual(markedSessionIDs, [previouslyRead.id])
+  }
+
   private func makeModel(
     sessions: [AgentSession],
     client: RemoteAPIClientProtocol,
@@ -384,6 +403,52 @@ private actor UnreadBadgeAPIClient: RemoteAPIClientProtocol {
   func sessions(projectID: String?) async throws -> [AgentSession] {
     throw RemoteAPIError.invalidData
   }
+  func session(id: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
+  func renameSession(id: UUID, title: String) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func setSessionPinned(id: UUID, isPinned: Bool) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func deleteSession(id: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
+  func documents(projectID: String) async throws -> [ProjectDocument] {
+    throw RemoteAPIError.invalidData
+  }
+  func documentContent(projectID: String, documentID: String) async throws
+    -> ProjectDocumentContent
+  {
+    throw RemoteAPIError.invalidData
+  }
+  func createSession(projectID: String) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func sendMessage(_ text: String, sessionID: UUID) async throws -> AcceptedResponse {
+    throw RemoteAPIError.invalidData
+  }
+}
+
+private actor ForegroundUnreadAPIClient: RemoteAPIClientProtocol {
+  private var storedSession: AgentSession
+  private(set) var markedSessionIDs: [UUID] = []
+
+  init(session: AgentSession) {
+    storedSession = session
+  }
+
+  func projects() async throws -> [AgentProject] { [] }
+
+  func sessions(projectID: String?) async throws -> [AgentSession] {
+    [storedSession]
+  }
+
+  func markSessionRead(id: UUID) async throws -> AgentSession {
+    guard storedSession.id == id else { throw RemoteAPIError.invalidData }
+    markedSessionIDs.append(id)
+    storedSession.isUnread = false
+    return storedSession
+  }
+
+  func health() async throws -> HealthResponse { throw RemoteAPIError.invalidData }
   func session(id: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
   func renameSession(id: UUID, title: String) async throws -> AgentSession {
     throw RemoteAPIError.invalidData

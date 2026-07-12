@@ -36,6 +36,7 @@ final class AppSettings: ObservableObject {
     static let fontScale = "fontScale"
     static let appearance = "appearance"
     static let autoRelaunchAfterCrash = "autoRelaunchAfterCrash"
+    static let selectedMakeTargetsBySession = "selectedMakeTargetsBySession"
   }
 
   private let defaults: UserDefaults
@@ -80,6 +81,26 @@ final class AppSettings: ObservableObject {
   func decreaseFontScale() { fontScale = max(fontScale - 0.1, 0.7) }
   func resetFontScale() { fontScale = 1 }
   func regenerateToken() { apiToken = Self.makeToken() }
+
+  func selectedMakeTarget(sessionID: UUID) -> String? {
+    (defaults.dictionary(forKey: Key.selectedMakeTargetsBySession) as? [String: String])?[
+      sessionID.uuidString
+    ]
+  }
+
+  func setSelectedMakeTarget(_ target: String, sessionID: UUID) {
+    var selections =
+      defaults.dictionary(forKey: Key.selectedMakeTargetsBySession) as? [String: String] ?? [:]
+    selections[sessionID.uuidString] = target
+    defaults.set(selections, forKey: Key.selectedMakeTargetsBySession)
+  }
+
+  func clearSelectedMakeTarget(sessionID: UUID) {
+    var selections =
+      defaults.dictionary(forKey: Key.selectedMakeTargetsBySession) as? [String: String] ?? [:]
+    selections.removeValue(forKey: sessionID.uuidString)
+    defaults.set(selections, forKey: Key.selectedMakeTargetsBySession)
+  }
 
   private static func makeToken() -> String {
     UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()

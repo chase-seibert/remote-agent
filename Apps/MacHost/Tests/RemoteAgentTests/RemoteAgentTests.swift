@@ -3,6 +3,14 @@ import Testing
 
 @testable import RemoteAgent
 
+private struct FixedCommitMessageGenerator: CommitMessageGenerating {
+  let message: String
+
+  func generate(stagedSummary _: String, stagedDiff _: String) async throws -> String {
+    message
+  }
+}
+
 struct RemoteAgentTests {
   @Test func parsesCodexJSONLEvents() {
     var parser = CodexEventAccumulator()
@@ -12,6 +20,76 @@ struct RemoteAgentTests {
 
     #expect(parser.sessionID == "019abc")
     #expect(parser.assistantMessages == ["Done."])
+  }
+
+  @Test func parsesCompletedReasoningEvent() throws {
+    let event = try #require(
+      CodexJSONLEvent(
+        line:
+          #"{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"  Inspecting the session pipeline.  "}}"#
+      ))
+
+    #expect(event.reasoningText == "Inspecting the session pipeline.")
+  }
+
+  @Test func buffersJSONLLinesAcrossOutputChunks() {
+    var buffer = JSONLLineBuffer()
+    let secondChunk = #"pleted","item":{"type":"reasoning"}}"# + "\n"
+
+    #expect(buffer.append(Data(#"{"type":"item.com"#.utf8)).isEmpty)
+    #expect(
+      buffer.append(Data(secondChunk.utf8))
+        == [#"{"type":"item.completed","item":{"type":"reasoning"}}"#]
+    )
+    #expect(buffer.append(Data(#"{"type":"turn.completed"}"#.utf8)).isEmpty)
+    #expect(buffer.finish() == #"{"type":"turn.completed"}"#)
+  }
+
+  @Test func discoversPhonyMakeTargetsIncludingContinuations() {
+    let makefile = """
+      .PHONY: setup format lint \\
+        test build clean --eval FOO=bar
+
+      build:
+      \t@echo build
+      """
+
+    #expect(
+      MakeTargetDiscovery.targets(makefileContents: makefile)
+        == ["setup", "format", "lint", "test", "build", "clean"]
+    )
+  }
+
+  @Test func discoversDeclaredMakeTargetsWhenPhonyListIsMissing() {
+    let makefile = """
+      APP := RemoteAgent
+      build test: prepare
+      .internal:
+      %.o: %.c
+      """
+
+    #expect(MakeTargetDiscovery.targets(makefileContents: makefile) == ["build", "test"])
+  }
+
+  @Test func sanitizesGeneratedCommitMessages() throws {
+    #expect(
+      try CommitMessageSanitizer.sanitize("Commit message: `Add project command controls`\nExtra")
+        == "Add project command controls"
+    )
+  }
+
+  @Test func capturedProcessRunnerCollectsOutputAndExitStatus() async {
+    let result = await CapturedProcessRunner().run(
+      executable: "/bin/sh",
+      arguments: ["-c", "printf 'standard output'; printf 'standard error' >&2; exit 3"],
+      currentDirectory: "/tmp",
+      displayCommand: "fixture command"
+    )
+
+    #expect(result.command == "fixture command")
+    #expect(result.output.contains("standard output"))
+    #expect(result.output.contains("standard error"))
+    #expect(result.exitCode == 3)
   }
 
   @Test func projectIDsAreStableAndURLSafe() {
@@ -39,6 +117,61 @@ struct RemoteAgentTests {
     #expect(loaded.count == 1)
     #expect(loaded.first?.messages.first?.text == "Hello")
     #expect(loaded.first?.isPinned == true)
+  }
+
+  @Test func sessionStoreDoesNotPersistCurrentReasoning() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SessionStore(fileURL: directory.appendingPathComponent("sessions.json"))
+    var session = AgentSession(project: AgentProject(path: "/tmp/example"))
+    session.isRunning = true
+    session.currentReasoning = "Checking the build output."
+
+    try await store.save([session])
+    let loaded = try await store.load()
+
+    #expect(loaded.first?.isRunning == true)
+    #expect(loaded.first?.currentReasoning == nil)
+  }
+
+  @Test func projectCommandResultStoreRoundTrips() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = ProjectCommandResultStore(
+      fileURL: directory.appendingPathComponent("command-results.json")
+    )
+    let result = ProjectCommandResult(
+      id: UUID(),
+      sessionID: UUID(),
+      projectPath: "/tmp/example",
+      kind: .make,
+      title: "Make test",
+      command: "make test",
+      output: "All tests passed",
+      exitCode: 0,
+      startedAt: Date(timeIntervalSince1970: 100),
+      completedAt: Date(timeIntervalSince1970: 101)
+    )
+
+    try await store.save([result])
+    let loaded = try await store.load()
+
+    #expect(loaded == [result])
+  }
+
+  @Test func sessionAPIEncodingIncludesCurrentReasoning() throws {
+    var session = AgentSession(project: AgentProject(path: "/tmp/example"))
+    session.isRunning = true
+    session.currentReasoning = "Checking the API response."
+
+    let data = try JSONEncoder().encode(session)
+    let object = try #require(
+      JSONSerialization.jsonObject(with: data) as? [String: Any]
+    )
+
+    #expect(object["currentReasoning"] as? String == "Checking the API response.")
   }
 
   @Test func markdownParserPreservesBlockStructure() {
@@ -215,6 +348,129 @@ struct RemoteAgentTests {
 
     #expect(reloaded.appearance == .dark)
     #expect(reloaded.appearance.colorScheme == .dark)
+  }
+
+  @MainActor
+  @Test func selectedMakeTargetPersistsPerSession() {
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let settings = AppSettings(defaults: defaults)
+
+    let firstSessionID = UUID()
+    let secondSessionID = UUID()
+    settings.setSelectedMakeTarget("test", sessionID: firstSessionID)
+    settings.setSelectedMakeTarget("build", sessionID: secondSessionID)
+    let reloaded = AppSettings(defaults: defaults)
+
+    #expect(reloaded.selectedMakeTarget(sessionID: firstSessionID) == "test")
+    #expect(reloaded.selectedMakeTarget(sessionID: secondSessionID) == "build")
+  }
+
+  @MainActor
+  @Test func makeCommandStoresOutputOutsideTranscriptPlaceholder() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let projectDirectory = directory.appendingPathComponent("project", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+      at: projectDirectory,
+      withIntermediateDirectories: true
+    )
+    try """
+    .PHONY: smoke
+    smoke:
+    \t@/bin/sleep 0.2
+    \t@echo PRIVATE COMMAND OUTPUT
+    """.write(
+      to: projectDirectory.appendingPathComponent("Makefile"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let settings = AppSettings(defaults: defaults)
+    settings.projectsRoot = directory.path
+    let model = AppModel(
+      settings: settings,
+      store: SessionStore(fileURL: directory.appendingPathComponent("sessions.json")),
+      activityStore: APIActivityStore(fileURL: directory.appendingPathComponent("activity.json")),
+      projectCommandResultStore: ProjectCommandResultStore(
+        fileURL: directory.appendingPathComponent("command-results.json")
+      )
+    )
+    await model.refreshProjects()
+    let project = try #require(model.projects.first)
+    let session = try #require(model.createSession(projectID: project.id))
+
+    let command = Task { await model.runActiveMakeTarget(sessionID: session.id) }
+    try await Task.sleep(for: .milliseconds(50))
+
+    let runningSession = try #require(model.sessions.first(where: { $0.id == session.id }))
+    let runningPlaceholder = try #require(runningSession.messages.last)
+    let runningResult = try #require(
+      model.projectCommandResult(messageID: runningPlaceholder.id)
+    )
+    #expect(runningPlaceholder.state == .pending)
+    #expect(runningPlaceholder.text == "Running make smoke… Click to view output.")
+    #expect(runningResult.isRunning)
+
+    await command.value
+
+    let updatedSession = try #require(model.sessions.first(where: { $0.id == session.id }))
+    let placeholder = try #require(updatedSession.messages.last)
+    let result = try #require(model.projectCommandResult(messageID: placeholder.id))
+    #expect(placeholder.id == runningPlaceholder.id)
+    #expect(placeholder.state == .complete)
+    #expect(placeholder.text == "Make smoke succeeded. Click to view output.")
+    #expect(!placeholder.text.contains("PRIVATE COMMAND OUTPUT"))
+    #expect(result.output.contains("PRIVATE COMMAND OUTPUT"))
+    #expect(!result.isRunning)
+  }
+
+  @Test func gitCommitAddsAndCommitsAllChanges() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let runner = CapturedProcessRunner()
+
+    for arguments in [
+      ["init"],
+      ["config", "user.name", "Remote Agent Tests"],
+      ["config", "user.email", "remote-agent-tests@example.invalid"],
+    ] {
+      let setup = await runner.run(
+        executable: "/usr/bin/git",
+        arguments: arguments,
+        currentDirectory: directory.path,
+        displayCommand: "git \(arguments.joined(separator: " "))"
+      )
+      #expect(setup.exitCode == 0)
+    }
+    try "untracked contents\n".write(
+      to: directory.appendingPathComponent("untracked.txt"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    let service = ProjectCommandService(
+      runner: runner,
+      commitMessageGenerator: FixedCommitMessageGenerator(message: "Add untracked fixture")
+    )
+    let outcome = await service.runGitCommit(projectPath: directory.path)
+    let subject = await runner.run(
+      executable: "/usr/bin/git",
+      arguments: ["log", "-1", "--pretty=%s"],
+      currentDirectory: directory.path,
+      displayCommand: "git log -1 --pretty=%s"
+    )
+
+    #expect(outcome.succeeded)
+    #expect(outcome.command.hasPrefix("git add --all && git commit"))
+    #expect(
+      subject.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Add untracked fixture")
   }
 
   @MainActor

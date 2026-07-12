@@ -31,14 +31,8 @@ struct ConversationView: View {
           }
 
           if session.isRunning {
-            HStack(spacing: 10) {
-              ProgressView()
-              Text("Agent is working…")
-                .foregroundStyle(.secondary)
-              Spacer()
-            }
-            .padding(.horizontal)
-            .id("running")
+            CurrentReasoningView(reasoning: session.currentReasoning)
+              .id("running")
           }
 
           let queuedPrompts = model.queuedPrompts(sessionID: session.id)
@@ -58,6 +52,9 @@ struct ConversationView: View {
         withAnimation { scrollToBottom(proxy) }
       }
       .onChange(of: session.isRunning) { _, _ in
+        withAnimation { scrollToBottom(proxy) }
+      }
+      .onChange(of: session.currentReasoning) { _, _ in
         withAnimation { scrollToBottom(proxy) }
       }
       .onChange(of: model.queuedPrompts(sessionID: session.id).count) { _, _ in
@@ -183,6 +180,33 @@ struct ConversationView: View {
         name: URL(fileURLWithPath: session.projectPath).lastPathComponent,
         path: session.projectPath
       )
+  }
+}
+
+private struct CurrentReasoningView: View {
+  let reasoning: String?
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      ProgressView()
+        .tint(.green)
+        .padding(.top, 2)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Working")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.green)
+        Text(reasoning ?? "Agent is working…")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+          .textSelection(.enabled)
+      }
+      Spacer(minLength: 24)
+    }
+    .padding(12)
+    .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+    .padding(.horizontal)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Agent working: \(reasoning ?? "Waiting for an update")")
   }
 }
 

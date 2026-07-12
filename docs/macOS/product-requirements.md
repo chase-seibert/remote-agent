@@ -7,6 +7,9 @@
 - As a developer, I want to start a session in a project, so that Codex reads and changes files in the correct working directory.
 - As a developer, I want to send several prompts in one session, so that Codex retains the conversation and tool context.
 - As a developer, I want my session list and visible transcript to survive an app restart, so that I can return to earlier work.
+- As a developer, I want to run a project's Makefile targets from a split button that remembers the latest target for each session, so that common build, test, and deployment workflows stay close to the active session.
+- As a developer, I want separate Commit and Push controls, with Commit staging every working-tree change and generating its subject on device, so that I can publish completed work without opening Terminal.
+- As a developer, I want project commands to appear immediately with running status, become a success or failure summary in place, and expose full output on demand, so that terminal noise does not overwhelm the conversation.
 - As a developer, I want sessions ordered by recent activity and unseen results clearly marked, so that I can quickly find work that needs attention.
 - As a developer, I want to dictate a prompt using macOS speech recognition, so that I can compose without typing.
 - As a developer, I want local Markdown and HTML links in agent responses to open inside Remote Agent, so that I can inspect generated reports without leaving the conversation workflow.

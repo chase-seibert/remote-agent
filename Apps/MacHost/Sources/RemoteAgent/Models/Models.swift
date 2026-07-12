@@ -86,6 +86,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   var updatedAt: Date
   var messages: [AgentMessage]
   var isRunning: Bool
+  var currentReasoning: String?
   var isUnread: Bool
   var isPinned: Bool
 
@@ -99,6 +100,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     updatedAt = Date()
     messages = []
     isRunning = false
+    currentReasoning = nil
     isUnread = false
     isPinned = false
   }
@@ -113,6 +115,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case updatedAt
     case messages
     case isRunning
+    case currentReasoning
     case isUnread
     case isPinned
   }
@@ -128,6 +131,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     messages = try container.decode([AgentMessage].self, forKey: .messages)
     isRunning = try container.decode(Bool.self, forKey: .isRunning)
+    currentReasoning = try container.decodeIfPresent(String.self, forKey: .currentReasoning)
     isUnread = try container.decodeIfPresent(Bool.self, forKey: .isUnread) ?? false
     isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
   }

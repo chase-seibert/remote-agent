@@ -217,6 +217,7 @@ final class AppModel: ObservableObject {
             )
           ],
           isRunning: index == 0,
+          currentReasoning: index == 0 ? "Checking the latest navigation behavior." : nil,
           isUnread: index < 2,
           isPinned: index == 7 || index == 12
         )
@@ -258,7 +259,8 @@ final class AppModel: ObservableObject {
             state: .complete
           ),
         ],
-        isRunning: true
+        isRunning: true,
+        currentReasoning: "Verifying FIFO delivery before updating the tests."
       )
       configuration = APIConfiguration(host: "fixture.local", port: 8765, token: "fixture")
       applySnapshot(projects: [project], sessions: [session])
@@ -642,6 +644,7 @@ final class AppModel: ObservableObject {
       }
       if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
         sessions[index].isRunning = true
+        sessions[index].currentReasoning = nil
       }
       Task { await completionNotifications.requestAuthorizationIfNeeded() }
       if clearDraftOnSuccess { saveDraft("", sessionID: sessionID) }
@@ -739,12 +742,18 @@ final class AppModel: ObservableObject {
     appIsActive = isActive
     if isActive {
       endBackgroundTask()
-      Task { await refresh() }
+      Task { [weak self] in await self?.refreshForForeground() }
     } else if sessions.contains(where: \.isRunning) {
       beginBackgroundPolling()
     } else {
       cancelPolling()
     }
+  }
+
+  func refreshForForeground() async {
+    await refresh()
+    guard appIsActive, let selectedSessionID else { return }
+    await markSessionRead(selectedSessionID)
   }
 
   private func applySnapshot(projects: [AgentProject], sessions: [AgentSession]) {

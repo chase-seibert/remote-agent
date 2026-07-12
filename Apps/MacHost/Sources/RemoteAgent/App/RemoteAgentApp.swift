@@ -28,6 +28,48 @@ struct RemoteAgentApp: App {
         Button("Refresh Projects") { Task { await model.refreshProjects() } }
           .keyboardShortcut("r", modifiers: .command)
       }
+      CommandMenu("Project") {
+        if let session = model.selectedSession {
+          let targets = model.makeTargets(for: session)
+          let activeTarget = model.activeMakeTarget(for: session)
+          let disabled =
+            session.isRunning || model.isProjectCommandRunning(sessionID: session.id)
+
+          Button(activeTarget.map { "Run make \($0)" } ?? "Run Make Target") {
+            Task { await model.runActiveMakeTarget(sessionID: session.id) }
+          }
+          .disabled(disabled || activeTarget == nil)
+
+          Menu("Make Target") {
+            ForEach(targets, id: \.self) { target in
+              Button {
+                model.selectMakeTarget(target, for: session)
+              } label: {
+                if target == activeTarget {
+                  Label(target, systemImage: "checkmark")
+                } else {
+                  Text(target)
+                }
+              }
+            }
+          }
+          .disabled(disabled || targets.isEmpty)
+
+          Divider()
+
+          Button("Add and Commit All Changes") {
+            Task { await model.runGitCommit(sessionID: session.id) }
+          }
+          .disabled(disabled)
+
+          Button("Push Current Branch") {
+            Task { await model.runGitPush(sessionID: session.id) }
+          }
+          .disabled(disabled)
+        } else {
+          Text("Select a session to run project commands")
+        }
+      }
       CommandGroup(after: .toolbar) {
         Divider()
         Button("Make Text Bigger") { settings.increaseFontScale() }

@@ -4,15 +4,57 @@ import SwiftUI
 struct MessageRowView: View {
   let message: AgentMessage
   let fontScale: Double
+  let onOpenDetails: (() -> Void)?
+
+  init(
+    message: AgentMessage,
+    fontScale: Double,
+    onOpenDetails: (() -> Void)? = nil
+  ) {
+    self.message = message
+    self.fontScale = fontScale
+    self.onOpenDetails = onOpenDetails
+  }
 
   var body: some View {
+    Group {
+      if let onOpenDetails {
+        Button(action: onOpenDetails) { rowContent }
+          .buttonStyle(.plain)
+      } else {
+        rowContent
+      }
+    }
+    .contextMenu {
+      if let onOpenDetails {
+        Button("View Output", systemImage: "terminal") { onOpenDetails() }
+        Divider()
+      }
+      Button("Copy") {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message.text, forType: .string)
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      "\(roleName): \(message.text)\(onOpenDetails == nil ? "" : ", click to view output")"
+    )
+  }
+
+  private var rowContent: some View {
     HStack(alignment: .top, spacing: 10) {
       if message.role == .user { Spacer(minLength: 72) }
 
       VStack(alignment: .leading, spacing: 7) {
         HStack(spacing: 6) {
-          Image(systemName: iconName)
-            .accessibilityHidden(true)
+          if message.state == .pending {
+            ProgressView()
+              .controlSize(.small)
+              .accessibilityHidden(true)
+          } else {
+            Image(systemName: iconName)
+              .accessibilityHidden(true)
+          }
           Text(roleName)
           if message.state == .failed {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -29,6 +71,12 @@ struct MessageRowView: View {
         MarkdownContentView(source: message.text, fontScale: fontScale)
           .foregroundStyle(contentColor)
           .tint(message.role == .user ? .white : .accentColor)
+
+        if onOpenDetails != nil {
+          Label("View Output", systemImage: "chevron.right")
+            .font(.system(size: 10 * fontScale, weight: .semibold))
+            .foregroundStyle(.secondary)
+        }
       }
       .frame(maxWidth: 760, alignment: .leading)
       .padding(12)
@@ -38,21 +86,15 @@ struct MessageRowView: View {
     }
     .padding(.horizontal, 18)
     .padding(.vertical, 4)
-    .contextMenu {
-      Button("Copy") {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(message.text, forType: .string)
-      }
-    }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(roleName): \(message.text)")
   }
 
   private var roleName: String {
     switch message.role {
     case .user: return "You"
     case .assistant: return "Agent"
-    case .system: return message.state == .failed ? "Failed" : "System"
+    case .system:
+      if message.state == .pending { return "Running" }
+      return message.state == .failed ? "Failed" : "System"
     }
   }
 
@@ -65,7 +107,9 @@ struct MessageRowView: View {
   }
 
   private var headerColor: Color {
-    message.state == .failed ? .red : (message.role == .user ? .white.opacity(0.9) : .secondary)
+    if message.state == .pending { return .green }
+    return message.state == .failed
+      ? .red : (message.role == .user ? .white.opacity(0.9) : .secondary)
   }
 
   private var contentColor: Color {
@@ -73,6 +117,7 @@ struct MessageRowView: View {
   }
 
   private var backgroundColor: Color {
+    if message.state == .pending { return .green.opacity(0.1) }
     if message.state == .failed { return .red.opacity(0.12) }
     return message.role == .user ? .accentColor : .secondary.opacity(0.12)
   }

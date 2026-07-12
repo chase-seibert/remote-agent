@@ -1,7 +1,7 @@
 import Foundation
 
 final class CodexCLIClient: @unchecked Sendable {
-  typealias EventHandler = @Sendable (String) -> Void
+  typealias EventHandler = @Sendable (CodexJSONLEvent) -> Void
 
   func send(
     prompt: String,
@@ -46,11 +46,17 @@ final class CodexCLIClient: @unchecked Sendable {
     if let existingSessionID {
       process.arguments = [
         "exec", "resume", "--json", "--skip-git-repo-check",
+        "-c", "hide_agent_reasoning=false",
+        "-c", "show_raw_agent_reasoning=false",
+        "-c", "model_reasoning_summary=auto",
         existingSessionID, "-",
       ]
     } else {
       process.arguments = [
         "exec", "--json", "--color", "never", "--skip-git-repo-check",
+        "-c", "hide_agent_reasoning=false",
+        "-c", "show_raw_agent_reasoning=false",
+        "-c", "model_reasoning_summary=auto",
         "-C", projectPath, "-",
       ]
     }
@@ -58,28 +64,19 @@ final class CodexCLIClient: @unchecked Sendable {
     process.standardError = stderr
     process.standardInput = stdin
 
-    let outputLock = NSLock()
-    var outputData = Data()
-    var errorData = Data()
+    let collector = CodexProcessOutputCollector()
 
     stdout.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
       guard !data.isEmpty else { return }
-      outputLock.lock()
-      outputData.append(data)
-      outputLock.unlock()
-      if let chunk = String(data: data, encoding: .utf8) {
-        for line in chunk.split(separator: "\n") {
-          onEvent?(String(line))
-        }
+      for line in collector.appendStdout(data) {
+        if let event = CodexJSONLEvent(line: line) { onEvent?(event) }
       }
     }
     stderr.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
       guard !data.isEmpty else { return }
-      outputLock.lock()
-      errorData.append(data)
-      outputLock.unlock()
+      collector.appendStderr(data)
     }
 
     try process.run()
@@ -89,13 +86,15 @@ final class CodexCLIClient: @unchecked Sendable {
     stdout.fileHandleForReading.readabilityHandler = nil
     stderr.fileHandleForReading.readabilityHandler = nil
 
-    outputLock.lock()
-    outputData.append(stdout.fileHandleForReading.readDataToEndOfFile())
-    errorData.append(stderr.fileHandleForReading.readDataToEndOfFile())
-    outputLock.unlock()
+    for line in collector.appendStdout(stdout.fileHandleForReading.readDataToEndOfFile()) {
+      if let event = CodexJSONLEvent(line: line) { onEvent?(event) }
+    }
+    collector.appendStderr(stderr.fileHandleForReading.readDataToEndOfFile())
+    if let line = collector.finishLine(), let event = CodexJSONLEvent(line: line) {
+      onEvent?(event)
+    }
 
-    let output = String(data: outputData, encoding: .utf8) ?? ""
-    let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+    let (output, errorOutput) = collector.strings()
     guard process.terminationStatus == 0 else {
       let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
       throw RemoteAgentError.commandFailed(
@@ -131,5 +130,43 @@ final class CodexCLIClient: @unchecked Sendable {
       throw RemoteAgentError.codexNotFound
     }
     return path
+  }
+}
+
+private final class CodexProcessOutputCollector: @unchecked Sendable {
+  private let lock = NSLock()
+  private var outputData = Data()
+  private var errorData = Data()
+  private var lineBuffer = JSONLLineBuffer()
+
+  func appendStdout(_ data: Data) -> [String] {
+    guard !data.isEmpty else { return [] }
+    lock.lock()
+    outputData.append(data)
+    let lines = lineBuffer.append(data)
+    lock.unlock()
+    return lines
+  }
+
+  func appendStderr(_ data: Data) {
+    guard !data.isEmpty else { return }
+    lock.lock()
+    errorData.append(data)
+    lock.unlock()
+  }
+
+  func finishLine() -> String? {
+    lock.lock()
+    let line = lineBuffer.finish()
+    lock.unlock()
+    return line
+  }
+
+  func strings() -> (output: String, error: String) {
+    lock.lock()
+    let output = String(data: outputData, encoding: .utf8) ?? ""
+    let error = String(data: errorData, encoding: .utf8) ?? ""
+    lock.unlock()
+    return (output, error)
   }
 }

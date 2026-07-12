@@ -59,13 +59,13 @@ struct RecentSessionsView: View {
       titleVisibility: .visible,
       presenting: sessionToDelete
     ) { session in
-      Button("Delete “\(session.title)”", role: .destructive) {
+      Button("Delete", role: .destructive) {
         sessionToDelete = nil
         Task { await model.deleteSession(session.id) }
       }
       Button("Cancel", role: .cancel) { sessionToDelete = nil }
-    } message: { _ in
-      Text("This permanently deletes the session and its transcript from the Mac.")
+    } message: { session in
+      Text("This permanently deletes “\(session.title)” and its transcript from the Mac.")
     }
     .overlay {
       if model.sessions.isEmpty, model.connectionState.isConnected {

@@ -55,7 +55,7 @@ Returns an array of `{ "id", "name", "path" }`. Treat `id` as opaque. The path i
 {"projectID":"<opaque-project-id>"}
 ```
 
-The response is `201 Created` with the full session. A session has a Remote Agent UUID `id`, an optional `codexSessionID`, project fields, title and timestamps, a `messages` array, `isRunning`, `isUnread`, and `isPinned`. Dates use ISO 8601. Enum values are lowercase strings.
+The response is `201 Created` with the full session. A session has a Remote Agent UUID `id`, an optional `codexSessionID`, project fields, title and timestamps, a `messages` array, `isRunning`, optional `currentReasoning`, `isUnread`, and `isPinned`. Dates use ISO 8601. Enum values are lowercase strings. `currentReasoning` contains only the latest concise reasoning summary while a turn is running; the host replaces it in place, clears it at completion, and never persists it.
 
 `GET /v1/sessions/<session-uuid>` fetches one current session.
 
@@ -95,7 +95,7 @@ HTTP/1.1 202 Accepted
 {"sessionID":"<session-uuid>","status":"accepted"}
 ```
 
-Poll `GET /v1/sessions/<session-uuid>` about once per second while `isRunning` is true. Stop polling when it becomes false, then render the newly appended assistant or failed system message. Back off or stop polling when the app is backgrounded. Only one turn may run per session; a concurrent submission receives `409 Conflict`.
+Poll `GET /v1/sessions/<session-uuid>` about once per second while `isRunning` is true. Replace the visible working summary with a non-empty `currentReasoning` value from each snapshot. Stop polling when `isRunning` becomes false, remove the working summary, then render the newly appended assistant or failed system message. Back off or stop polling when the app is backgrounded. Only one turn may run per session; a concurrent submission receives `409 Conflict`.
 
 ### Project documents
 

@@ -23,31 +23,37 @@ struct AllSessionsSidebarView: View {
         set: { model.selectSession($0) }
       )
     ) { session in
-      SessionSidebarRow(session: session, fontScale: fontScale)
-        .tag(session.id)
-        .contextMenu {
-          if session.isUnread {
-            Button("Mark as Read") { model.markSessionRead(session.id) }
-          }
-          Button(session.isPinned ? "Unpin Session" : "Pin Session") {
-            do {
-              try model.setSessionPinned(session.id, isPinned: !session.isPinned)
-            } catch {
-              model.presentedError = error.localizedDescription
-            }
-          }
-          Button("New Session in This Project") {
-            model.createSession(projectID: session.projectID)
-          }
-          if let project = model.projects.first(where: { $0.id == session.projectID }) {
-            Button("Show Project in Finder") { model.showProjectInFinder(project) }
-          }
-          Divider()
-          Button("Delete Session", role: .destructive) {
-            sessionPendingDeletion = session
-          }
-          .disabled(session.isRunning)
+      SessionSidebarRow(
+        session: session,
+        isProjectCommandRunning: model.isProjectCommandRunning(sessionID: session.id),
+        fontScale: fontScale
+      )
+      .tag(session.id)
+      .contextMenu {
+        if session.isUnread {
+          Button("Mark as Read") { model.markSessionRead(session.id) }
         }
+        Button(session.isPinned ? "Unpin Session" : "Pin Session") {
+          do {
+            try model.setSessionPinned(session.id, isPinned: !session.isPinned)
+          } catch {
+            model.presentedError = error.localizedDescription
+          }
+        }
+        Button("New Session in This Project") {
+          model.createSession(projectID: session.projectID)
+        }
+        if let project = model.projects.first(where: { $0.id == session.projectID }) {
+          Button("Show Project in Finder") { model.showProjectInFinder(project) }
+        }
+        Divider()
+        Button("Delete Session", role: .destructive) {
+          sessionPendingDeletion = session
+        }
+        .disabled(
+          session.isRunning || model.isProjectCommandRunning(sessionID: session.id)
+        )
+      }
     }
     .navigationTitle("Sessions")
     .searchable(text: $searchText, placement: .sidebar, prompt: "Filter Sessions")
@@ -105,11 +111,14 @@ struct AllSessionsSidebarView: View {
 
 private struct SessionSidebarRow: View {
   let session: AgentSession
+  let isProjectCommandRunning: Bool
   let fontScale: Double
+
+  private var isRunning: Bool { session.isRunning || isProjectCommandRunning }
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
-      if session.isRunning {
+      if isRunning {
         RunningAgentIcon()
       } else {
         Image(systemName: "bubble.left.fill")
@@ -140,7 +149,7 @@ private struct SessionSidebarRow: View {
         .foregroundStyle(.secondary)
 
         HStack(spacing: 6) {
-          if session.isRunning {
+          if isRunning {
             SessionStatusBadge(title: "Running", color: .green, fontScale: fontScale)
           }
           if session.messages.last?.state == .failed {
@@ -154,7 +163,7 @@ private struct SessionSidebarRow: View {
               systemImage: "bubble.left.fill"
             )
           }
-          if !session.isRunning, session.messages.last?.state != .failed, !session.isUnread {
+          if !isRunning, session.messages.last?.state != .failed, !session.isUnread {
             SessionStatusBadge(
               title: session.messages.isEmpty ? "New" : "Read",
               color: .secondary,
@@ -175,7 +184,7 @@ private struct SessionSidebarRow: View {
       session.projectName,
       session.updatedAt.formatted(date: .abbreviated, time: .shortened),
     ]
-    if session.isRunning { values.append("Running") }
+    if isRunning { values.append("Running") }
     if session.isPinned { values.append("Pinned") }
     if session.messages.last?.state == .failed { values.append("Failed") }
     values.append(session.isUnread ? "Unread" : "Read")

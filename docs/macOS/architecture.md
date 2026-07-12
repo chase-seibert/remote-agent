@@ -12,6 +12,11 @@ flowchart LR
     C -->|"codex exec --json"| X["Codex CLI"]
     X --> W["Selected project workspace"]
     X --> G["Existing Codex config and plugins"]
+    M --> R["ProjectCommandService"]
+    R -->|"make target"| W
+    R -->|"git commit / git push"| W
+    R --> F["Apple Foundation Models"]
+    M --> Q["ProjectCommandResultStore JSON"]
 ```
 
 ## Components
@@ -20,7 +25,9 @@ flowchart LR
 - Session pin state is persisted metadata and does not alter activity timestamps. Deletion removes the local transcript only after confirmation in the Mac UI and rejects active sessions so in-flight Codex results cannot be orphaned. The authenticated API exposes the same behavior through session `PATCH` and `DELETE`, and returns pinned-first session lists.
 - Session renames are validated metadata updates persisted through `SessionStore`; they do not change activity timestamps or interrupt active turns.
 - `ProjectScanner` invokes `/usr/bin/find` to list immediate child directories of the configured root. Codex currently has no stable, non-interactive machine-readable project-list command.
-- `CodexCLIClient` launches the configured Codex executable with `Process`, sends prompts over standard input, parses JSONL events, records the returned thread ID, and resumes it on future turns.
+- `CodexCLIClient` launches the configured Codex executable with `Process`, sends prompts over standard input, line-buffers streamed JSONL events, records the returned thread ID, publishes completed reasoning summaries during a turn, and resumes the thread on future turns. It requests summary reasoning while explicitly keeping raw reasoning hidden.
+- `ProjectCommandService` discovers Make targets from `.PHONY` declarations with a conservative target-declaration fallback, invokes `/usr/bin/make` and `/usr/bin/git` directly without a shell, merges stdout and stderr, and caps retained output at 512 KB per run. Commit first invokes `git add --all`. On macOS 26 or later it gives the resulting staged file summary and a bounded staged diff to Apple's on-device Foundation Models framework, using greedy sampling and a 24-token response limit, then passes the sanitized one-line subject to `git commit -m`.
+- `ProjectCommandResultStore` keeps the 200 most recent local command results under Application Support. Transcript messages contain only a running, success, or failure placeholder keyed by the same UUID; completion updates the original row in place. Full commands and output remain Mac-local and are never encoded into the session API.
 - `SessionStore` atomically persists Remote Agent's session metadata and visible transcripts under Application Support. Codex separately persists its own conversation/tool state.
 - `SpeechTranscriber` uses `SFSpeechRecognizer` and `AVAudioEngine`; speech is only an input method and does not change the agent protocol.
 - `LocalLinkResolver` recognizes absolute, `file://`, and project-relative filesystem links. Markdown, HTML, and supported source-code files are routed to typed SwiftUI document windows; other local files use Launch Services, and network URLs remain system-handled.
@@ -34,8 +41,8 @@ flowchart LR
 1. The app appends and persists the user's message, then marks the session running.
 2. A new session runs `codex exec --json --color never --skip-git-repo-check -C <project> -`.
 3. A continued session runs `codex exec resume --json --skip-git-repo-check <thread-id> -` with the project as its process working directory.
-4. The JSONL parser captures `thread.started` and the final completed `agent_message`.
-5. The app persists the Codex thread ID and assistant response, clears running state, and updates clients through their next poll.
+4. The JSONL parser captures `thread.started`, replaces the session's transient `currentReasoning` whenever a completed reasoning summary arrives, and captures the final completed `agent_message`.
+5. The app persists the Codex thread ID and assistant response, clears running state and `currentReasoning`, and updates clients through their next poll. `SessionStore` never writes `currentReasoning` to disk.
 
 ## Tradeoffs and boundaries
 
@@ -45,3 +52,4 @@ flowchart LR
 - Because HTTP connections are short-lived, “mobile active” means a non-loopback request reached the Mac within the last 30 seconds; it does not imply a continuously connected socket.
 - The HTTP server has bearer-token authentication but no TLS. It is intended only for a trusted local network. Bonjour provides discovery but not trust; a later release should add key pairing, TLS, and token rotation UX before enabling broader access.
 - There is no approval bridge in version one. The effective Codex sandbox and approval behavior comes from the user's Codex CLI configuration; Remote Agent never passes a dangerous bypass flag.
+- Project commands require an explicit toolbar or Project-menu action, run one at a time per session, and are disabled while its Codex turn is active. Commit stages all changes, Push never forces, and neither action uses a shell. Foundation Models availability depends on macOS 26, Apple Intelligence support, enablement, and model readiness; unavailable generation produces a failed placeholder rather than falling back to a remote model.

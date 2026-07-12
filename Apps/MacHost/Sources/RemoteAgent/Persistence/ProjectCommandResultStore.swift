@@ -1,6 +1,6 @@
 import Foundation
 
-actor SessionStore {
+actor ProjectCommandResultStore {
   private let fileURL: URL
   private let encoder: JSONEncoder
   private let decoder: JSONDecoder
@@ -16,7 +16,7 @@ actor SessionStore {
       self.fileURL =
         support
         .appendingPathComponent("Remote Agent", isDirectory: true)
-        .appendingPathComponent("sessions.json")
+        .appendingPathComponent("project-command-results.json")
     }
     encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -25,21 +25,21 @@ actor SessionStore {
     decoder.dateDecodingStrategy = .iso8601
   }
 
-  func load() throws -> [AgentSession] {
+  func load() throws -> [ProjectCommandResult] {
     guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
-    return try decoder.decode([AgentSession].self, from: Data(contentsOf: fileURL))
+    return try decoder.decode([ProjectCommandResult].self, from: Data(contentsOf: fileURL))
   }
 
-  func save(_ sessions: [AgentSession]) throws {
+  func save(_ results: [ProjectCommandResult]) throws {
     try FileManager.default.createDirectory(
       at: fileURL.deletingLastPathComponent(),
       withIntermediateDirectories: true
     )
-    let persistentSessions = sessions.map { session in
-      var persistentSession = session
-      persistentSession.currentReasoning = nil
-      return persistentSession
-    }
-    try encoder.encode(persistentSessions).write(to: fileURL, options: .atomic)
+    let recentResults = Array(
+      results.sorted {
+        ($0.completedAt ?? $0.startedAt) > ($1.completedAt ?? $1.startedAt)
+      }.prefix(200)
+    )
+    try encoder.encode(recentResults).write(to: fileURL, options: .atomic)
   }
 }
