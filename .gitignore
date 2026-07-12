@@ -1,0 +1,90 @@
+# macOS and editor state
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.fleet/
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+*.xcsettings
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.pbxuser
+*.perspectivev3
+
+# Build products, caches, and test output
+/build/
+/DerivedData/
+.build/
+**/build/
+**/.build/
+.swiftpm/
+*.hmap
+*.xcresult
+*.profdata
+*.profraw
+/coverage/
+/test-results/
+
+# Archives and distribution output
+/dist/
+/artifacts/
+/archives/
+/exports/
+*.app
+*.ipa
+*.xcarchive
+*.dSYM
+*.dSYM.zip
+*.dmg
+*.pkg
+
+# Dependency-manager generated output
+Pods/
+Carthage/Build/
+.swiftpm/xcode/xcuserdata/
+
+# Fastlane generated output
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
+
+# Signing material and local configuration
+*.mobileprovision
+*.p12
+*.cer
+.env
+.env.*
+!.env.example
+
+# Logs and scratch directories
+*.log
+/tmp/
+/.tmp/
+
+# Large locally generated media and design exports. Required images inside
+# RemoteAgentIOS/Resources/Assets.xcassets remain tracked.
+/screenshots/
+/recordings/
+/videos/
+*.mov
+*.mp4
+*.m4v
+*.avi
+*.mkv
+*.webm
+*.psd
+*.sketch
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z

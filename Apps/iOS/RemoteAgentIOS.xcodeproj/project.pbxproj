@@ -1,0 +1,307 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* AppModel.swift */; };
+		A10000000000000000000002 /* RemoteAgentIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* RemoteAgentIOSApp.swift */; };
+		A10000000000000000000003 /* AgentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* AgentModels.swift */; };
+		A10000000000000000000004 /* APIConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* APIConfiguration.swift */; };
+		A10000000000000000000005 /* RemoteAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* RemoteAPIClient.swift */; };
+		A10000000000000000000006 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* KeychainStore.swift */; };
+		A10000000000000000000007 /* ConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* ConfigurationStore.swift */; };
+		A10000000000000000000008 /* DraftStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* DraftStore.swift */; };
+		A10000000000000000000009 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* RootView.swift */; };
+		A1000000000000000000000B /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* SessionsView.swift */; };
+		A1000000000000000000000C /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* ConversationView.swift */; };
+		A1000000000000000000000D /* MessageRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* MessageRow.swift */; };
+		A1000000000000000000000E /* ConnectionSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* ConnectionSettingsView.swift */; };
+		A1000000000000000000000F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* Assets.xcassets */; };
+		A10000000000000000000010 /* APIConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* APIConfigurationTests.swift */; };
+		A10000000000000000000011 /* DraftStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000012 /* DraftStoreTests.swift */; };
+		A10000000000000000000012 /* RemoteAPIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* RemoteAPIClientTests.swift */; };
+		A10000000000000000000013 /* ActivityOrderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* ActivityOrderingTests.swift */; };
+		A10000000000000000000014 /* ProjectDocumentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* ProjectDocumentsView.swift */; };
+		A10000000000000000000015 /* ProjectLinkResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* ProjectLinkResolver.swift */; };
+		A10000000000000000000016 /* CompletionNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* CompletionNotificationService.swift */; };
+		B10000000000000000000001 /* ConversationScrollIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* ConversationScrollIntegrationTests.swift */; };
+		C10000000000000000000001 /* RemoteAgentProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000001 /* RemoteAgentProtocol */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A30000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A80000000000000000000001;
+			remoteInfo = RemoteAgentIOS;
+		};
+		B30000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A80000000000000000000001;
+			remoteInfo = RemoteAgentIOS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A20000000000000000000001 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/AppModel.swift; sourceTree = "<group>"; };
+		A20000000000000000000002 /* RemoteAgentIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/RemoteAgentIOSApp.swift; sourceTree = "<group>"; };
+		A20000000000000000000003 /* AgentModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/AgentModels.swift; sourceTree = "<group>"; };
+		A20000000000000000000004 /* APIConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/APIConfiguration.swift; sourceTree = "<group>"; };
+		A20000000000000000000005 /* RemoteAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Networking/RemoteAPIClient.swift; sourceTree = "<group>"; };
+		A20000000000000000000006 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/KeychainStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000007 /* ConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/ConfigurationStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000008 /* DraftStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Persistence/DraftStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/RootView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000B /* SessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/SessionsView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000C /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ConversationView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000D /* MessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/MessageRow.swift; sourceTree = "<group>"; };
+		A2000000000000000000000E /* ConnectionSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ConnectionSettingsView.swift; sourceTree = "<group>"; };
+		A2000000000000000000000F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Resources/Assets.xcassets; sourceTree = "<group>"; };
+		A20000000000000000000010 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Resources/Info.plist; sourceTree = "<group>"; };
+		A20000000000000000000011 /* APIConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIConfigurationTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000012 /* DraftStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftStoreTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000013 /* RemoteAPIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAPIClientTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* Remote Agent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Remote Agent.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000015 /* RemoteAgentIOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RemoteAgentIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000016 /* ActivityOrderingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityOrderingTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000017 /* ProjectDocumentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ProjectDocumentsView.swift; sourceTree = "<group>"; };
+		A20000000000000000000018 /* ProjectLinkResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/ProjectLinkResolver.swift; sourceTree = "<group>"; };
+		A20000000000000000000019 /* CompletionNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/CompletionNotificationService.swift; sourceTree = "<group>"; };
+		B20000000000000000000001 /* ConversationScrollIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationScrollIntegrationTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* RemoteAgentIOSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RemoteAgentIOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A40000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (C10000000000000000000001 /* RemoteAgentProtocol in Frameworks */); runOnlyForDeploymentPostprocessing = 0; };
+		A40000000000000000000002 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		B40000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A50000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A50000000000000000000002 /* RemoteAgentIOS */,
+				A50000000000000000000003 /* RemoteAgentIOSTests */,
+				B50000000000000000000001 /* RemoteAgentIOSUITests */,
+				A50000000000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A50000000000000000000002 /* RemoteAgentIOS */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* AppModel.swift */,
+				A20000000000000000000002 /* RemoteAgentIOSApp.swift */,
+				A20000000000000000000003 /* AgentModels.swift */,
+				A20000000000000000000004 /* APIConfiguration.swift */,
+				A20000000000000000000018 /* ProjectLinkResolver.swift */,
+				A20000000000000000000005 /* RemoteAPIClient.swift */,
+				A20000000000000000000006 /* KeychainStore.swift */,
+				A20000000000000000000007 /* ConfigurationStore.swift */,
+				A20000000000000000000008 /* DraftStore.swift */,
+				A20000000000000000000019 /* CompletionNotificationService.swift */,
+				A20000000000000000000009 /* RootView.swift */,
+				A2000000000000000000000B /* SessionsView.swift */,
+				A2000000000000000000000C /* ConversationView.swift */,
+				A2000000000000000000000D /* MessageRow.swift */,
+				A2000000000000000000000E /* ConnectionSettingsView.swift */,
+				A20000000000000000000017 /* ProjectDocumentsView.swift */,
+				A2000000000000000000000F /* Assets.xcassets */,
+				A20000000000000000000010 /* Info.plist */,
+			);
+			path = RemoteAgentIOS;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000003 /* RemoteAgentIOSTests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000016 /* ActivityOrderingTests.swift */,
+				A20000000000000000000011 /* APIConfigurationTests.swift */,
+				A20000000000000000000012 /* DraftStoreTests.swift */,
+				A20000000000000000000013 /* RemoteAPIClientTests.swift */,
+			);
+			path = RemoteAgentIOSTests;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000014 /* Remote Agent.app */,
+				A20000000000000000000015 /* RemoteAgentIOSTests.xctest */,
+				B20000000000000000000002 /* RemoteAgentIOSUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B50000000000000000000001 /* RemoteAgentIOSUITests */ = {
+			isa = PBXGroup;
+			children = (
+				B20000000000000000000001 /* ConversationScrollIntegrationTests.swift */,
+			);
+			path = RemoteAgentIOSUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A80000000000000000000001 /* RemoteAgentIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB0000000000000000000002 /* Build configuration list for PBXNativeTarget "RemoteAgentIOS" */;
+			buildPhases = (
+				A60000000000000000000001 /* Sources */,
+				A40000000000000000000001 /* Frameworks */,
+				A70000000000000000000001 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			name = RemoteAgentIOS;
+			packageProductDependencies = (
+				C30000000000000000000001 /* RemoteAgentProtocol */,
+			);
+			productName = "Remote Agent";
+			productReference = A20000000000000000000014 /* Remote Agent.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A80000000000000000000002 /* RemoteAgentIOSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB0000000000000000000003 /* Build configuration list for PBXNativeTarget "RemoteAgentIOSTests" */;
+			buildPhases = (
+				A60000000000000000000002 /* Sources */,
+				A40000000000000000000002 /* Frameworks */,
+				A70000000000000000000002 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = (A30000000000000000000002 /* PBXTargetDependency */);
+			name = RemoteAgentIOSTests;
+			productName = RemoteAgentIOSTests;
+			productReference = A20000000000000000000015 /* RemoteAgentIOSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		B80000000000000000000001 /* RemoteAgentIOSUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB00000000000000000000001 /* Build configuration list for PBXNativeTarget "RemoteAgentIOSUITests" */;
+			buildPhases = (
+				B60000000000000000000001 /* Sources */,
+				B40000000000000000000001 /* Frameworks */,
+				B70000000000000000000001 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = (B30000000000000000000002 /* PBXTargetDependency */);
+			name = RemoteAgentIOSUITests;
+			productName = RemoteAgentIOSUITests;
+			productReference = B20000000000000000000002 /* RemoteAgentIOSUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A90000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					A80000000000000000000001 = {CreatedOnToolsVersion = 26.6; };
+					A80000000000000000000002 = {CreatedOnToolsVersion = 26.6; TestTargetID = A80000000000000000000001; };
+					B80000000000000000000001 = {CreatedOnToolsVersion = 26.6; TestTargetID = A80000000000000000000001; };
+				};
+			};
+			buildConfigurationList = AB0000000000000000000001 /* Build configuration list for PBXProject "RemoteAgentIOS" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base);
+			mainGroup = A50000000000000000000001;
+			packageReferences = (
+				C20000000000000000000001 /* XCLocalSwiftPackageReference "../../Packages/RemoteAgentProtocol" */,
+			);
+			productRefGroup = A50000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (A80000000000000000000001 /* RemoteAgentIOS */, A80000000000000000000002 /* RemoteAgentIOSTests */, B80000000000000000000001 /* RemoteAgentIOSUITests */);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A70000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000F /* Assets.xcassets in Resources */); runOnlyForDeploymentPostprocessing = 0; };
+		A70000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		B70000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A60000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001, A10000000000000000000002, A10000000000000000000003, A10000000000000000000004,
+				A10000000000000000000005, A10000000000000000000006, A10000000000000000000007, A10000000000000000000008,
+				A10000000000000000000009, A1000000000000000000000B, A1000000000000000000000C,
+				A1000000000000000000000D, A1000000000000000000000E,
+				A10000000000000000000014,
+				A10000000000000000000015,
+				A10000000000000000000016,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A60000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A10000000000000000000010, A10000000000000000000011, A10000000000000000000012, A10000000000000000000013);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B60000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (B10000000000000000000001 /* ConversationScrollIntegrationTests.swift in Sources */);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A30000000000000000000002 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A80000000000000000000001 /* RemoteAgentIOS */; targetProxy = A30000000000000000000001 /* PBXContainerItemProxy */; };
+		B30000000000000000000002 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A80000000000000000000001 /* RemoteAgentIOS */; targetProxy = B30000000000000000000001 /* PBXContainerItemProxy */; };
+/* End PBXTargetDependency section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		C20000000000000000000001 /* XCLocalSwiftPackageReference "../../Packages/RemoteAgentProtocol" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../Packages/RemoteAgentProtocol;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C30000000000000000000001 /* RemoteAgentProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C20000000000000000000001 /* XCLocalSwiftPackageReference "../../Packages/RemoteAgentProtocol" */;
+			productName = RemoteAgentProtocol;
+		};
+/* End XCSwiftPackageProductDependency section */
+
+/* Begin XCBuildConfiguration section */
+		AA0000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; IPHONEOS_DEPLOYMENT_TARGET = 17.0; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
+		AA0000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; ENABLE_NS_ASSERTIONS = NO; GCC_C_LANGUAGE_STANDARD = gnu17; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; VALIDATE_PRODUCT = YES; }; name = Release; };
+		AA0000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_ACCENT_COLOR_NAME = AccentColor; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = 96NAC4VTEN; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = RemoteAgentIOS/Resources/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks"); MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.cseibert.RemoteAgentIOS; PRODUCT_MODULE_NAME = RemoteAgentIOS; PRODUCT_NAME = "Remote Agent"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		AA0000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_ACCENT_COLOR_NAME = AccentColor; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = 96NAC4VTEN; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = RemoteAgentIOS/Resources/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks"); MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.cseibert.RemoteAgentIOS; PRODUCT_MODULE_NAME = RemoteAgentIOS; PRODUCT_NAME = "Remote Agent"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		AA0000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = 96NAC4VTEN; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks"); PRODUCT_BUNDLE_IDENTIFIER = com.cseibert.RemoteAgentIOSTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Remote Agent.app/Remote Agent"; }; name = Debug; };
+		AA0000000000000000000006 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = 96NAC4VTEN; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks"); PRODUCT_BUNDLE_IDENTIFIER = com.cseibert.RemoteAgentIOSTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Remote Agent.app/Remote Agent"; }; name = Release; };
+		BA0000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = 96NAC4VTEN; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.cseibert.RemoteAgentIOSUITests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = RemoteAgentIOS; }; name = Debug; };
+		BA0000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = 96NAC4VTEN; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.cseibert.RemoteAgentIOSUITests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = RemoteAgentIOS; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AB0000000000000000000001 /* Build configuration list for PBXProject "RemoteAgentIOS" */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000001, AA0000000000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		AB0000000000000000000002 /* Build configuration list for PBXNativeTarget "RemoteAgentIOS" */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000003, AA0000000000000000000004); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		AB0000000000000000000003 /* Build configuration list for PBXNativeTarget "RemoteAgentIOSTests" */ = {isa = XCConfigurationList; buildConfigurations = (AA0000000000000000000005, AA0000000000000000000006); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		BB00000000000000000000001 /* Build configuration list for PBXNativeTarget "RemoteAgentIOSUITests" */ = {isa = XCConfigurationList; buildConfigurations = (BA0000000000000000000001, BA0000000000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A90000000000000000000001 /* Project object */;
+}
