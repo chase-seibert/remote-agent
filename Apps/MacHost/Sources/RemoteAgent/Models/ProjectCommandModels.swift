@@ -1,4 +1,5 @@
 import Foundation
+import RemoteAgentProtocol
 
 enum ProjectCommandKind: String, Codable, Sendable {
   case make
@@ -37,4 +38,27 @@ struct ProjectCommandOutcome: Sendable {
   let completedAt: Date
 
   var succeeded: Bool { exitCode == 0 }
+}
+
+extension ProjectCommandResult {
+  var remoteResult: RemoteProjectCommandResult {
+    let remoteKind: RemoteProjectCommandKind
+    switch kind {
+    case .make: remoteKind = .make
+    case .gitCommit: remoteKind = .gitCommit
+    case .gitPush: remoteKind = .gitPush
+    }
+    return RemoteProjectCommandResult(
+      id: id,
+      sessionID: sessionID,
+      projectPath: projectPath,
+      kind: remoteKind,
+      title: title,
+      command: command,
+      output: output,
+      exitCode: exitCode,
+      startedAt: startedAt,
+      completedAt: completedAt
+    )
+  }
 }

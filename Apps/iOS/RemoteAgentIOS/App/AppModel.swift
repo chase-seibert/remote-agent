@@ -80,6 +80,9 @@ final class AppModel: ObservableObject {
   @Published private(set) var sessions: [AgentSession] = []
   @Published private(set) var queuedPromptsBySession: [UUID: [QueuedPrompt]] = [:]
   @Published private(set) var deliveringQueuedPromptIDs: Set<UUID> = []
+  @Published private(set) var projectCommandConfigurations:
+    [UUID: ProjectCommandConfigurationResponse] = [:]
+  @Published private(set) var runningProjectCommandSessionIDs: Set<UUID> = []
   @Published private(set) var configuration: APIConfiguration?
   @Published var selectedSessionID: UUID?
   @Published var presentedError: String?
@@ -385,6 +388,8 @@ final class AppModel: ObservableObject {
       client = proposedClient
       protocolVersion = health.version
       queuedPromptsBySession = [:]
+      projectCommandConfigurations = [:]
+      runningProjectCommandSessionIDs = []
       applySnapshot(projects: snapshot.0, sessions: snapshot.1)
       loadQueuedPromptsForSessions()
       connectionState = .connected(version: health.version)
@@ -450,7 +455,7 @@ final class AppModel: ObservableObject {
     selectedSessionID = id
     guard let id else { return }
     loadQueuedPromptsIfNeeded(sessionID: id)
-    guard sessions.first(where: { $0.id == id })?.isRunning == true else {
+    guard sessions.first(where: { $0.id == id })?.hasActiveWork == true else {
       Task { await deliverNextQueuedPromptIfPossible(sessionID: id) }
       return
     }
@@ -511,7 +516,9 @@ final class AppModel: ObservableObject {
   }
 
   func deleteSession(_ id: UUID) async -> Bool {
-    guard sessions.first(where: { $0.id == id })?.isRunning == false else {
+    guard sessions.first(where: { $0.id == id })?.hasActiveWork == false,
+      !runningProjectCommandSessionIDs.contains(id)
+    else {
       presentedError = "Wait for this session to finish before deleting it."
       return false
     }
@@ -527,6 +534,8 @@ final class AppModel: ObservableObject {
       deliveringQueuedPromptIDs.subtract(queuedPromptIDs)
       queuedPromptsBySession[id] = nil
       sendingSessionIDs.remove(id)
+      runningProjectCommandSessionIDs.remove(id)
+      projectCommandConfigurations[id] = nil
       saveDraft("", sessionID: id)
       if let serverIdentifier = configuration?.serverIdentifier {
         draftStore.saveQueuedPrompts([], serverIdentifier: serverIdentifier, sessionID: id)
@@ -566,6 +575,125 @@ final class AppModel: ObservableObject {
     return try await client.documents(projectID: projectID)
   }
 
+  func projectCommandConfiguration(sessionID: UUID) -> ProjectCommandConfigurationResponse? {
+    projectCommandConfigurations[sessionID]
+  }
+
+  func isProjectCommandRunning(sessionID: UUID) -> Bool {
+    runningProjectCommandSessionIDs.contains(sessionID)
+      || projectCommandConfigurations[sessionID]?.isRunning == true
+      || sessions.first(where: { $0.id == sessionID })?.hasPendingProjectCommand == true
+  }
+
+  func loadProjectCommandConfiguration(sessionID: UUID) async {
+    guard let client, connectionState.isConnected else { return }
+    do {
+      let configuration = try await client.projectCommandConfiguration(sessionID: sessionID)
+      projectCommandConfigurations[sessionID] = configuration
+      if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+        sessions[index].selectedMakeTarget = configuration.selectedMakeTarget
+      }
+    } catch {
+      presentedError = error.localizedDescription
+    }
+  }
+
+  func selectMakeTarget(_ target: String, sessionID: UUID) async {
+    guard let client,
+      let previousConfiguration = projectCommandConfigurations[sessionID],
+      previousConfiguration.makeTargets.contains(target)
+    else { return }
+    projectCommandConfigurations[sessionID] = ProjectCommandConfigurationResponse(
+      sessionID: previousConfiguration.sessionID,
+      makeTargets: previousConfiguration.makeTargets,
+      selectedMakeTarget: target,
+      isRunning: previousConfiguration.isRunning
+    )
+    if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+      sessions[index].selectedMakeTarget = target
+    }
+    do {
+      replaceSession(try await client.selectMakeTarget(target, sessionID: sessionID))
+      await loadProjectCommandConfiguration(sessionID: sessionID)
+    } catch {
+      projectCommandConfigurations[sessionID] = previousConfiguration
+      if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+        sessions[index].selectedMakeTarget = previousConfiguration.selectedMakeTarget
+      }
+      presentedError = error.localizedDescription
+    }
+  }
+
+  func runProjectCommand(_ action: ProjectCommandAction, sessionID: UUID) async {
+    guard let client,
+      let original = sessions.first(where: { $0.id == sessionID }),
+      !original.hasActiveWork,
+      !runningProjectCommandSessionIDs.contains(sessionID)
+    else { return }
+    let target = action == .make ? projectCommandConfigurations[sessionID]?.selectedMakeTarget : nil
+    if action == .make, target == nil {
+      presentedError = "Choose a Make target before running it."
+      return
+    }
+
+    runningProjectCommandSessionIDs.insert(sessionID)
+    updateProjectCommandRunningState(sessionID: sessionID, isRunning: true)
+    do {
+      let accepted = try await client.runProjectCommand(
+        action,
+        target: target,
+        sessionID: sessionID
+      )
+      guard accepted.sessionID == sessionID, accepted.status == "accepted" else {
+        throw RemoteAPIError.invalidData
+      }
+
+      for _ in 0..<5 {
+        let updated = try await client.session(id: sessionID)
+        replaceSession(updated)
+        if updated.messages.count > original.messages.count || updated.hasPendingProjectCommand {
+          if !updated.hasPendingProjectCommand {
+            runningProjectCommandSessionIDs.remove(sessionID)
+            updateProjectCommandRunningState(sessionID: sessionID, isRunning: false)
+          }
+          break
+        }
+        try await Task.sleep(for: .milliseconds(100))
+      }
+      startPolling(
+        sessionID: sessionID,
+        acceptedBaseline: PollBaseline(
+          messageCount: original.messages.count,
+          updatedAt: original.updatedAt
+        )
+      )
+    } catch {
+      runningProjectCommandSessionIDs.remove(sessionID)
+      updateProjectCommandRunningState(sessionID: sessionID, isRunning: false)
+      presentedError = error.localizedDescription
+      if case RemoteAPIError.unreachable = error {
+        connectionState = .failed(message: error.localizedDescription)
+      }
+    }
+  }
+
+  func projectCommandResult(sessionID: UUID, resultID: UUID) async throws
+    -> RemoteProjectCommandResult
+  {
+    guard let client else { throw RemoteAPIError.notConnected }
+    return try await client.projectCommandResult(sessionID: sessionID, resultID: resultID)
+  }
+
+  private func updateProjectCommandRunningState(sessionID: UUID, isRunning: Bool) {
+    guard let current = projectCommandConfigurations[sessionID] else { return }
+    projectCommandConfigurations[sessionID] = ProjectCommandConfigurationResponse(
+      sessionID: current.sessionID,
+      makeTargets: current.makeTargets,
+      selectedMakeTarget: current.selectedMakeTarget,
+      isRunning: isRunning
+    )
+  }
+
   func documentContent(projectID: String, documentID: String) async throws
     -> ProjectDocumentContent
   {
@@ -589,7 +717,8 @@ final class AppModel: ObservableObject {
 
     loadQueuedPromptsIfNeeded(sessionID: sessionID)
     let shouldQueue =
-      session.isRunning
+      session.hasActiveWork
+      || runningProjectCommandSessionIDs.contains(sessionID)
       || sendingSessionIDs.contains(sessionID)
       || !connectionState.isConnected
       || client == nil
@@ -598,7 +727,9 @@ final class AppModel: ObservableObject {
     if shouldQueue {
       enqueuePrompt(text, sessionID: sessionID)
       saveDraft("", sessionID: sessionID)
-      if !session.isRunning, connectionState.isConnected {
+      if !session.hasActiveWork, !runningProjectCommandSessionIDs.contains(sessionID),
+        connectionState.isConnected
+      {
         Task { await deliverNextQueuedPromptIfPossible(sessionID: sessionID) }
       }
       return true
@@ -630,7 +761,8 @@ final class AppModel: ObservableObject {
     clearDraftOnSuccess: Bool
   ) async -> Bool {
     guard let client,
-      let original = sessions.first(where: { $0.id == sessionID }), !original.isRunning,
+      let original = sessions.first(where: { $0.id == sessionID }), !original.hasActiveWork,
+      !runningProjectCommandSessionIDs.contains(sessionID),
       !sendingSessionIDs.contains(sessionID)
     else { return false }
 
@@ -709,7 +841,9 @@ final class AppModel: ObservableObject {
 
   private func deliverQueuedPromptsForIdleSessions() {
     for session in sessions
-    where !session.isRunning && !queuedPrompts(sessionID: session.id).isEmpty {
+    where !session.hasActiveWork && !runningProjectCommandSessionIDs.contains(session.id)
+      && !queuedPrompts(sessionID: session.id).isEmpty
+    {
       Task { await deliverNextQueuedPromptIfPossible(sessionID: session.id) }
     }
   }
@@ -717,7 +851,8 @@ final class AppModel: ObservableObject {
   private func deliverNextQueuedPromptIfPossible(sessionID: UUID) async {
     loadQueuedPromptsIfNeeded(sessionID: sessionID)
     guard connectionState.isConnected,
-      sessions.first(where: { $0.id == sessionID })?.isRunning == false,
+      sessions.first(where: { $0.id == sessionID })?.hasActiveWork == false,
+      !runningProjectCommandSessionIDs.contains(sessionID),
       !sendingSessionIDs.contains(sessionID),
       let prompt = queuedPromptsBySession[sessionID]?.first,
       !deliveringQueuedPromptIDs.contains(prompt.id)
@@ -743,7 +878,9 @@ final class AppModel: ObservableObject {
     if isActive {
       endBackgroundTask()
       Task { [weak self] in await self?.refreshForForeground() }
-    } else if sessions.contains(where: \.isRunning) {
+    } else if sessions.contains(where: \.hasActiveWork)
+      || !runningProjectCommandSessionIDs.isEmpty
+    {
       beginBackgroundPolling()
     } else {
       cancelPolling()
@@ -800,7 +937,7 @@ final class AppModel: ObservableObject {
 
   private func startPollingForRunningSessions() {
     guard appIsActive else { return }
-    for session in sessions where session.isRunning {
+    for session in sessions where session.hasActiveWork {
       startPolling(sessionID: session.id)
     }
   }
@@ -835,7 +972,7 @@ final class AppModel: ObservableObject {
         replaceSession(updated)
         connectionState = .connected(version: protocolVersion)
 
-        if updated.isRunning {
+        if updated.hasActiveWork {
           observedRunning = true
           continue
         }
@@ -863,6 +1000,10 @@ final class AppModel: ObservableObject {
   private func finishPolling(sessionID: UUID, handleID: UUID) {
     guard pollHandles[sessionID]?.id == handleID else { return }
     pollHandles[sessionID] = nil
+    if sessions.first(where: { $0.id == sessionID })?.hasPendingProjectCommand != true {
+      runningProjectCommandSessionIDs.remove(sessionID)
+      updateProjectCommandRunningState(sessionID: sessionID, isRunning: false)
+    }
     if !appIsActive, pollHandles.isEmpty, pendingCompletionNotifications == 0 {
       endBackgroundTask()
     }
@@ -877,7 +1018,7 @@ final class AppModel: ObservableObject {
   }
 
   private func notifyIfCompleted(previous: AgentSession, updated: AgentSession) {
-    guard previous.isRunning, !updated.isRunning else { return }
+    guard previous.hasActiveWork, !updated.hasActiveWork else { return }
     Task { [weak self] in
       await Task.yield()
       await self?.deliverNextQueuedPromptIfPossible(sessionID: updated.id)

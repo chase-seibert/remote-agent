@@ -8,7 +8,7 @@
 - As a developer, I want to send several prompts in one session, so that Codex retains the conversation and tool context.
 - As a developer, I want my session list and visible transcript to survive an app restart, so that I can return to earlier work.
 - As a developer, I want to run a project's Makefile targets from a split button that remembers the latest target for each session, so that common build, test, and deployment workflows stay close to the active session.
-- As a developer, I want separate Commit and Push controls, with Commit staging every working-tree change and generating its subject on device, so that I can publish completed work without opening Terminal.
+- As a developer, I want one Commit & Push control that stages every working-tree change, generates its subject on device, commits, and pushes when an upstream exists, so that I can publish completed work without opening Terminal or fail merely because a local branch has no upstream.
 - As a developer, I want project commands to appear immediately with running status, become a success or failure summary in place, and expose full output on demand, so that terminal noise does not overwhelm the conversation.
 - As a developer, I want sessions ordered by recent activity and unseen results clearly marked, so that I can quickly find work that needs attention.
 - As a developer, I want to dictate a prompt using macOS speech recognition, so that I can compose without typing.
@@ -16,7 +16,7 @@
 - As a Mac user, I want standard menus, keyboard shortcuts, sidebars, Settings, text selection, and Finder integration, so that the app behaves like a native Mac app.
 - As a Mac user, I want exactly one main Remote Agent window and one running app process, so that repeated launches never create duplicate hosts or navigation windows.
 - As a Mac user, I want the app to follow the system appearance or stay in my chosen light or dark mode, so that it remains comfortable in different environments.
-- As a future iOS client user, I want an authenticated local-network API, so that my phone can view projects/sessions and submit prompts to the Mac-hosted Codex CLI.
+- As an iOS client user, I want an authenticated local-network API, so that my phone can view sessions, submit prompts, run project commands, and inspect results produced by the Mac host.
 - As a mobile user, I want Bonjour discovery and automatic recovery from malformed connections or host crashes, so that the Mac service remains available without routine intervention.
 - As an iOS client user, I want read-only access to project Markdown, HTML, and source-code files, so that I can conveniently reference documentation and implementation details from my phone.
 - As a user, I want to rename a saved session, so that its title remains meaningful as the work evolves.

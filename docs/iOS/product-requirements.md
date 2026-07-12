@@ -7,6 +7,8 @@
 - As a developer, I want to pin important sessions above recent activity, so that durable work stays easy to reach across projects.
 - As a developer, I want to delete an idle session after confirming the destructive action, so that obsolete transcripts do not clutter the global list.
 - As a developer, I want to queue follow-up prompts while an agent is working, so that my next instructions run automatically in order.
+- As a developer, I want to select and run Make targets plus a combined Git Commit & Push action from a conversation, so that build and publishing workflows execute on my Mac while I am using my phone.
+- As a developer, I want to open a project-command chat row and inspect the Mac's full output on a dismissible screen, so that command details remain available without cluttering the transcript.
 - As a developer, I want active turns to update automatically, so that I know when Codex has finished or failed.
 - As a developer returning to an already-open conversation, I want newly delivered activity marked read immediately, so that its unread marker does not remain stale.
 - As a developer, I want a session to open at its latest activity, so that I do not have to manually scroll through old messages.
@@ -28,3 +30,4 @@
 - Transport is HTTP with a bearer token and a narrow local-network ATS allowance.
 - Only one turn can run per session.
 - The iOS client does not run Codex or Claude itself and does not interpret project paths as iOS paths.
+- Make and Git processes run only on the authenticated Mac host; iOS sends typed requests and displays host-captured results.

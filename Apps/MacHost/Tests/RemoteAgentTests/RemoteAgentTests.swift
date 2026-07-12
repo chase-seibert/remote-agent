@@ -1,4 +1,5 @@
 import Foundation
+import RemoteAgentProtocol
 import Testing
 
 @testable import RemoteAgent
@@ -76,6 +77,11 @@ struct RemoteAgentTests {
       try CommitMessageSanitizer.sanitize("Commit message: `Add project command controls`\nExtra")
         == "Add project command controls"
     )
+
+    let longMessage = String(repeating: "word ", count: 20) + "tail"
+    let truncatedMessage = try CommitMessageSanitizer.sanitize(longMessage)
+    #expect(truncatedMessage.count <= 72)
+    #expect(truncatedMessage.hasSuffix("word"))
   }
 
   @Test func capturedProcessRunnerCollectsOutputAndExitStatus() async {
@@ -350,21 +356,21 @@ struct RemoteAgentTests {
     #expect(reloaded.appearance.colorScheme == .dark)
   }
 
-  @MainActor
-  @Test func selectedMakeTargetPersistsPerSession() {
-    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
-    let defaults = UserDefaults(suiteName: suiteName)!
-    defer { defaults.removePersistentDomain(forName: suiteName) }
-    let settings = AppSettings(defaults: defaults)
+  @Test func selectedMakeTargetPersistsWithItsSession() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = SessionStore(fileURL: directory.appendingPathComponent("sessions.json"))
+    var firstSession = AgentSession(project: AgentProject(path: "/tmp/example"))
+    var secondSession = AgentSession(project: AgentProject(path: "/tmp/example"))
+    firstSession.selectedMakeTarget = "test"
+    secondSession.selectedMakeTarget = "build"
 
-    let firstSessionID = UUID()
-    let secondSessionID = UUID()
-    settings.setSelectedMakeTarget("test", sessionID: firstSessionID)
-    settings.setSelectedMakeTarget("build", sessionID: secondSessionID)
-    let reloaded = AppSettings(defaults: defaults)
+    try await store.save([firstSession, secondSession])
+    let reloaded = try await store.load()
 
-    #expect(reloaded.selectedMakeTarget(sessionID: firstSessionID) == "test")
-    #expect(reloaded.selectedMakeTarget(sessionID: secondSessionID) == "build")
+    #expect(reloaded.first(where: { $0.id == firstSession.id })?.selectedMakeTarget == "test")
+    #expect(reloaded.first(where: { $0.id == secondSession.id })?.selectedMakeTarget == "build")
   }
 
   @MainActor
@@ -429,7 +435,7 @@ struct RemoteAgentTests {
     #expect(!result.isRunning)
   }
 
-  @Test func gitCommitAddsAndCommitsAllChanges() async throws {
+  @Test func gitCommitAndPushCommitsAllChangesAndSilentlySkipsMissingUpstream() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -459,7 +465,7 @@ struct RemoteAgentTests {
       runner: runner,
       commitMessageGenerator: FixedCommitMessageGenerator(message: "Add untracked fixture")
     )
-    let outcome = await service.runGitCommit(projectPath: directory.path)
+    let outcome = await service.runGitCommitAndPush(projectPath: directory.path)
     let subject = await runner.run(
       executable: "/usr/bin/git",
       arguments: ["log", "-1", "--pretty=%s"],
@@ -469,8 +475,82 @@ struct RemoteAgentTests {
 
     #expect(outcome.succeeded)
     #expect(outcome.command.hasPrefix("git add --all && git commit"))
+    #expect(!outcome.command.contains("git push"))
+    #expect(outcome.title == "Git Commit & Push: Add untracked fixture")
     #expect(
       subject.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Add untracked fixture")
+  }
+
+  @Test func gitCommitAndPushPushesWhenCurrentBranchHasUpstream() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let project = directory.appendingPathComponent("project", isDirectory: true)
+    let remote = directory.appendingPathComponent("remote.git", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    let runner = CapturedProcessRunner()
+
+    let bareInit = await runner.run(
+      executable: "/usr/bin/git",
+      arguments: ["init", "--bare", remote.path],
+      currentDirectory: directory.path,
+      displayCommand: "git init --bare"
+    )
+    #expect(bareInit.exitCode == 0)
+    for arguments in [
+      ["init"],
+      ["config", "user.name", "Remote Agent Tests"],
+      ["config", "user.email", "remote-agent-tests@example.invalid"],
+    ] {
+      let setup = await runner.run(
+        executable: "/usr/bin/git",
+        arguments: arguments,
+        currentDirectory: project.path,
+        displayCommand: "git \(arguments.joined(separator: " "))"
+      )
+      #expect(setup.exitCode == 0)
+    }
+    try "initial\n".write(
+      to: project.appendingPathComponent("fixture.txt"),
+      atomically: true,
+      encoding: .utf8
+    )
+    for arguments in [
+      ["add", "--all"],
+      ["commit", "-m", "Initial fixture"],
+      ["remote", "add", "origin", remote.path],
+      ["push", "--set-upstream", "origin", "HEAD"],
+    ] {
+      let setup = await runner.run(
+        executable: "/usr/bin/git",
+        arguments: arguments,
+        currentDirectory: project.path,
+        displayCommand: "git \(arguments.joined(separator: " "))"
+      )
+      #expect(setup.exitCode == 0)
+    }
+    try "updated\n".write(
+      to: project.appendingPathComponent("fixture.txt"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    let service = ProjectCommandService(
+      runner: runner,
+      commitMessageGenerator: FixedCommitMessageGenerator(message: "Update fixture")
+    )
+    let outcome = await service.runGitCommitAndPush(projectPath: project.path)
+    let remoteSubject = await runner.run(
+      executable: "/usr/bin/git",
+      arguments: ["--git-dir", remote.path, "log", "-1", "--pretty=%s"],
+      currentDirectory: directory.path,
+      displayCommand: "git log -1 --pretty=%s"
+    )
+
+    #expect(outcome.succeeded)
+    #expect(outcome.command.contains("git push"))
+    #expect(
+      remoteSubject.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Update fixture")
   }
 
   @MainActor
@@ -608,6 +688,90 @@ struct RemoteAgentTests {
     #expect(deleteResponse.status == 200)
     #expect(try decodeAPI(AgentSession.self, from: deleteResponse).id == older.id)
     #expect(!model.sessions.contains(where: { $0.id == older.id }))
+  }
+
+  @MainActor
+  @Test func projectCommandAPIRunsMakeAndReturnsCapturedOutput() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let projectDirectory = directory.appendingPathComponent("Example", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+      at: projectDirectory,
+      withIntermediateDirectories: true
+    )
+    try """
+    .PHONY: smoke
+    smoke:
+    \t@echo MOBILE COMMAND OUTPUT
+    """.write(
+      to: projectDirectory.appendingPathComponent("Makefile"),
+      atomically: true,
+      encoding: .utf8
+    )
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let settings = AppSettings(defaults: defaults)
+    settings.projectsRoot = directory.path
+    settings.apiToken = "test-token"
+    let model = AppModel(
+      settings: settings,
+      store: SessionStore(fileURL: directory.appendingPathComponent("sessions.json")),
+      activityStore: APIActivityStore(fileURL: directory.appendingPathComponent("activity.json")),
+      projectCommandResultStore: ProjectCommandResultStore(
+        fileURL: directory.appendingPathComponent("command-results.json")
+      )
+    )
+    await model.refreshProjects()
+    let project = try #require(model.projects.first)
+    let session = try #require(model.createSession(projectID: project.id, select: false))
+    let commandsPath = RemoteAgentEndpoint.sessionProjectCommands(session.id)
+
+    let configurationResponse = await model.handleAPI(
+      try apiRequest(method: "GET", path: commandsPath, token: settings.apiToken))
+    let configuration = try decodeAPI(
+      ProjectCommandConfigurationResponse.self,
+      from: configurationResponse
+    )
+    #expect(configuration.makeTargets == ["smoke"])
+    #expect(configuration.selectedMakeTarget == "smoke")
+
+    let selectionResponse = await model.handleAPI(
+      try apiRequest(
+        method: "PATCH",
+        path: RemoteAgentEndpoint.session(session.id),
+        token: settings.apiToken,
+        jsonBody: ["selectedMakeTarget": "smoke"]
+      ))
+    #expect(selectionResponse.status == 200)
+    #expect(try decodeAPI(AgentSession.self, from: selectionResponse).selectedMakeTarget == "smoke")
+
+    let runResponse = await model.handleAPI(
+      try apiRequest(
+        method: "POST",
+        path: commandsPath,
+        token: settings.apiToken,
+        jsonBody: ["action": "make", "target": "smoke"]
+      ))
+    #expect(runResponse.status == 202)
+
+    var commandMessage: AgentMessage?
+    for _ in 0..<100 {
+      commandMessage = model.sessions.first(where: { $0.id == session.id })?.messages.last
+      if commandMessage?.state == .complete { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    let resultID = try #require(commandMessage?.projectCommandResultID)
+    let resultResponse = await model.handleAPI(
+      try apiRequest(
+        method: "GET",
+        path: RemoteAgentEndpoint.sessionProjectCommandResult(session.id, resultID: resultID),
+        token: settings.apiToken
+      ))
+    let result = try decodeAPI(RemoteProjectCommandResult.self, from: resultResponse)
+    #expect(result.succeeded)
+    #expect(result.output.contains("MOBILE COMMAND OUTPUT"))
   }
 
   @Test func apiClientClassifierDistinguishesLoopbackAndRemoteHosts() {

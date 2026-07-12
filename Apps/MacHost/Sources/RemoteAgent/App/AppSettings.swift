@@ -88,13 +88,6 @@ final class AppSettings: ObservableObject {
     ]
   }
 
-  func setSelectedMakeTarget(_ target: String, sessionID: UUID) {
-    var selections =
-      defaults.dictionary(forKey: Key.selectedMakeTargetsBySession) as? [String: String] ?? [:]
-    selections[sessionID.uuidString] = target
-    defaults.set(selections, forKey: Key.selectedMakeTargetsBySession)
-  }
-
   func clearSelectedMakeTarget(sessionID: UUID) {
     var selections =
       defaults.dictionary(forKey: Key.selectedMakeTargetsBySession) as? [String: String] ?? [:]

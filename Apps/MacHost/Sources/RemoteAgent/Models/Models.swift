@@ -60,19 +60,22 @@ struct AgentMessage: Identifiable, Codable, Hashable, Sendable {
   var text: String
   let createdAt: Date
   var state: MessageState
+  var projectCommandResultID: UUID?
 
   init(
     id: UUID = UUID(),
     role: MessageRole,
     text: String,
     createdAt: Date = Date(),
-    state: MessageState = .complete
+    state: MessageState = .complete,
+    projectCommandResultID: UUID? = nil
   ) {
     self.id = id
     self.role = role
     self.text = text
     self.createdAt = createdAt
     self.state = state
+    self.projectCommandResultID = projectCommandResultID
   }
 }
 
@@ -89,6 +92,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   var currentReasoning: String?
   var isUnread: Bool
   var isPinned: Bool
+  var selectedMakeTarget: String?
 
   init(project: AgentProject) {
     id = UUID()
@@ -103,6 +107,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     currentReasoning = nil
     isUnread = false
     isPinned = false
+    selectedMakeTarget = nil
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -118,6 +123,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case currentReasoning
     case isUnread
     case isPinned
+    case selectedMakeTarget
   }
 
   init(from decoder: Decoder) throws {
@@ -134,6 +140,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     currentReasoning = try container.decodeIfPresent(String.self, forKey: .currentReasoning)
     isUnread = try container.decodeIfPresent(Bool.self, forKey: .isUnread) ?? false
     isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+    selectedMakeTarget = try container.decodeIfPresent(String.self, forKey: .selectedMakeTarget)
   }
 }
 

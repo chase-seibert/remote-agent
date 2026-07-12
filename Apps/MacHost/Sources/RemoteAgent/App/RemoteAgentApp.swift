@@ -41,29 +41,26 @@ struct RemoteAgentApp: App {
           .disabled(disabled || activeTarget == nil)
 
           Menu("Make Target") {
-            ForEach(targets, id: \.self) { target in
-              Button {
-                model.selectMakeTarget(target, for: session)
-              } label: {
-                if target == activeTarget {
-                  Label(target, systemImage: "checkmark")
-                } else {
-                  Text(target)
-                }
+            Picker(
+              "Make Target",
+              selection: Binding(
+                get: { model.activeMakeTarget(for: session) ?? targets.first ?? "" },
+                set: { model.selectMakeTarget($0, for: session) }
+              )
+            ) {
+              ForEach(targets, id: \.self) { target in
+                Text(target).tag(target)
               }
             }
+            .pickerStyle(.inline)
+            .labelsHidden()
           }
           .disabled(disabled || targets.isEmpty)
 
           Divider()
 
-          Button("Add and Commit All Changes") {
-            Task { await model.runGitCommit(sessionID: session.id) }
-          }
-          .disabled(disabled)
-
-          Button("Push Current Branch") {
-            Task { await model.runGitPush(sessionID: session.id) }
+          Button("Commit and Push All Changes") {
+            Task { await model.runGitCommitAndPush(sessionID: session.id) }
           }
           .disabled(disabled)
         } else {

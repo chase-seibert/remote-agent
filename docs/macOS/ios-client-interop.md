@@ -55,7 +55,7 @@ Returns an array of `{ "id", "name", "path" }`. Treat `id` as opaque. The path i
 {"projectID":"<opaque-project-id>"}
 ```
 
-The response is `201 Created` with the full session. A session has a Remote Agent UUID `id`, an optional `codexSessionID`, project fields, title and timestamps, a `messages` array, `isRunning`, optional `currentReasoning`, `isUnread`, and `isPinned`. Dates use ISO 8601. Enum values are lowercase strings. `currentReasoning` contains only the latest concise reasoning summary while a turn is running; the host replaces it in place, clears it at completion, and never persists it.
+The response is `201 Created` with the full session. A session has a Remote Agent UUID `id`, an optional `codexSessionID`, project fields, title and timestamps, a `messages` array, `isRunning`, optional `currentReasoning`, `isUnread`, `isPinned`, and optional `selectedMakeTarget`. Dates use ISO 8601. Enum values are lowercase strings. `currentReasoning` contains only the latest concise reasoning summary while a turn is running; the host replaces it in place, clears it at completion, and never persists it. A project-command message includes `projectCommandResultID`; ordinary messages omit it.
 
 `GET /v1/sessions/<session-uuid>` fetches one current session.
 
@@ -74,6 +74,14 @@ Pin or unpin with:
 ```
 
 The patch may include either or both fields. Pinning affects list ordering but not activity timestamps.
+
+Select a Make target with:
+
+```json
+{ "selectedMakeTarget": "test" }
+```
+
+The host validates the target against the session project's current Makefile and persists it with the session.
 
 `DELETE /v1/sessions/<session-uuid>` permanently removes an idle session and its locally persisted transcript. The response is `200 OK` with the deleted session. Deleting a running session returns `409 Conflict`.
 
@@ -95,7 +103,36 @@ HTTP/1.1 202 Accepted
 {"sessionID":"<session-uuid>","status":"accepted"}
 ```
 
-Poll `GET /v1/sessions/<session-uuid>` about once per second while `isRunning` is true. Replace the visible working summary with a non-empty `currentReasoning` value from each snapshot. Stop polling when `isRunning` becomes false, remove the working summary, then render the newly appended assistant or failed system message. Back off or stop polling when the app is backgrounded. Only one turn may run per session; a concurrent submission receives `409 Conflict`.
+Poll `GET /v1/sessions/<session-uuid>` about once per second while `isRunning` is true or a message with `projectCommandResultID` remains `pending`. Replace the visible working summary with a non-empty `currentReasoning` value from each agent snapshot. Stop polling when neither kind of active work remains, remove the working summary, then render the updated assistant or system message. Back off or stop polling when the app is backgrounded. Only one agent turn or project command may run per session; a concurrent submission receives `409 Conflict`.
+
+### Project commands
+
+`GET /v1/sessions/<session-uuid>/project-commands` returns the Make targets, selected target, and current command state:
+
+```json
+{
+  "sessionID": "<session-uuid>",
+  "makeTargets": ["build", "test", "phone-deploy"],
+  "selectedMakeTarget": "test",
+  "isRunning": false
+}
+```
+
+Start the selected Make target with:
+
+```http
+POST /v1/sessions/<session-uuid>/project-commands
+
+{"action":"make","target":"test"}
+```
+
+Git uses the same endpoint with `{"action":"gitCommitAndPush"}`. The Mac runs the executables in the session's project directory and returns `202 Accepted`. The action stages all changes, generates a one-line subject with Apple Foundation Models, commits, and uses ordinary `git push` when the current branch has a configured upstream. If there is no upstream, the push step is silently skipped and the committed action succeeds. The older `gitCommit` and `gitPush` request values remain accepted for compatibility.
+
+The host immediately appends a pending system message whose `projectCommandResultID` matches its message ID. Poll the session until that row becomes complete or failed. Fetch full output only when needed:
+
+`GET /v1/sessions/<session-uuid>/project-commands/<result-uuid>`
+
+The response includes `id`, `sessionID`, `projectPath`, `kind`, `title`, `command`, `output`, optional `exitCode`, `startedAt`, and optional `completedAt`. A missing `completedAt` means the command is still running. The host caps retained output and verifies that the result belongs to the session in the URL.
 
 ### Project documents
 
@@ -110,7 +147,7 @@ Errors use an HTTP status and `{ "error": "human-readable detail" }`:
 - `400`: malformed JSON, missing text, or unknown project.
 - `401`: absent/incorrect bearer token.
 - `404`: route or session not found.
-- `409`: the session is already processing a turn and cannot accept the requested operation.
+- `409`: the session is already processing an agent turn or project command and cannot accept the requested operation.
 - `500`: host-side failure.
 
 Codex execution failures are appended to the session as a `system` message whose state is `failed`; therefore a successfully accepted request can still result in a later agent failure.

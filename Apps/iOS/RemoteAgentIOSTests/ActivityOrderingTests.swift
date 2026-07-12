@@ -3,6 +3,34 @@ import XCTest
 @testable import RemoteAgentIOS
 
 final class ActivityOrderingTests: XCTestCase {
+  func testPendingProjectCommandCountsAsActiveWork() {
+    let now = Date()
+    let resultID = UUID()
+    let session = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/tmp/project",
+      codexSessionID: nil,
+      title: "Command",
+      createdAt: now,
+      updatedAt: now,
+      messages: [
+        AgentMessage(
+          id: resultID,
+          role: .system,
+          text: "Running make test…",
+          createdAt: now,
+          state: .pending,
+          projectCommandResultID: resultID
+        )
+      ],
+      isRunning: false
+    )
+
+    XCTAssertTrue(session.hasPendingProjectCommand)
+    XCTAssertTrue(session.hasActiveWork)
+  }
+
   func testRightwardHorizontalSwipeNavigatesToSessions() {
     XCTAssertTrue(
       SessionListSwipeGesture.shouldNavigate(

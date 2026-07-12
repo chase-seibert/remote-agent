@@ -1,3 +1,4 @@
+import RemoteAgentProtocol
 import XCTest
 
 @testable import RemoteAgentIOS
@@ -256,6 +257,182 @@ final class RemoteAPIClientTests: XCTestCase {
     } catch {
       XCTFail("Unexpected error: \(error)")
     }
+  }
+
+  func testLoadsProjectCommandConfiguration() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(
+        request.url?.path,
+        "/v1/sessions/\(sessionID.uuidString)/project-commands"
+      )
+      let json = """
+        {
+          "sessionID":"\(sessionID.uuidString)",
+          "makeTargets":["build","test"],
+          "selectedMakeTarget":"test",
+          "isRunning":false
+        }
+        """
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let result = try await client.projectCommandConfiguration(sessionID: sessionID)
+    XCTAssertEqual(result.makeTargets, ["build", "test"])
+    XCTAssertEqual(result.selectedMakeTarget, "test")
+  }
+
+  func testRunsSelectedMakeCommandOnHost() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(request.httpMethod, "POST")
+      XCTAssertEqual(
+        request.url?.path,
+        "/v1/sessions/\(sessionID.uuidString)/project-commands"
+      )
+      let body = try requestBodyData(request)
+      let command = try JSONDecoder().decode(ProjectCommandRequest.self, from: body)
+      XCTAssertEqual(command, ProjectCommandRequest(action: .make, target: "phone-deploy"))
+      let json = #"{"sessionID":"\#(sessionID.uuidString)","status":"accepted"}"#
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let result = try await client.runProjectCommand(
+      .make,
+      target: "phone-deploy",
+      sessionID: sessionID
+    )
+    XCTAssertEqual(result.sessionID, sessionID)
+    XCTAssertEqual(result.status, "accepted")
+  }
+
+  func testRunsCombinedCommitAndPushOnHost() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      let body = try requestBodyData(request)
+      let command = try JSONDecoder().decode(ProjectCommandRequest.self, from: body)
+      XCTAssertEqual(command, ProjectCommandRequest(action: .gitCommitAndPush))
+      let json = #"{"sessionID":"\#(sessionID.uuidString)","status":"accepted"}"#
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 202, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let result = try await client.runProjectCommand(
+      .gitCommitAndPush,
+      target: nil,
+      sessionID: sessionID
+    )
+    XCTAssertEqual(result.status, "accepted")
+  }
+
+  func testPersistsSelectedMakeTargetOnHost() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(request.httpMethod, "PATCH")
+      let body = try requestBodyData(request)
+      let update = try JSONDecoder().decode(SessionUpdateRequest.self, from: body)
+      XCTAssertEqual(update.selectedMakeTarget, "test")
+      let json = """
+        {
+          "id":"\(sessionID.uuidString)",
+          "projectID":"opaque",
+          "projectPath":"/Users/example/project",
+          "codexSessionID":null,
+          "title":"Test",
+          "createdAt":"2026-07-11T20:00:00Z",
+          "updatedAt":"2026-07-11T20:00:01Z",
+          "messages":[],
+          "isRunning":false,
+          "selectedMakeTarget":"test"
+        }
+        """
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let result = try await client.selectMakeTarget("test", sessionID: sessionID)
+    XCTAssertEqual(result.selectedMakeTarget, "test")
+  }
+
+  func testFetchesProjectCommandOutput() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+    let resultID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(
+        request.url?.path,
+        "/v1/sessions/\(sessionID.uuidString)/project-commands/\(resultID.uuidString)"
+      )
+      let json = """
+        {
+          "id":"\(resultID.uuidString)",
+          "sessionID":"\(sessionID.uuidString)",
+          "projectPath":"/Users/example/project",
+          "kind":"make",
+          "title":"Make test",
+          "command":"make test",
+          "output":"All tests passed",
+          "exitCode":0,
+          "startedAt":"2026-07-12T20:00:00Z",
+          "completedAt":"2026-07-12T20:00:01Z"
+        }
+        """
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let result = try await client.projectCommandResult(
+      sessionID: sessionID,
+      resultID: resultID
+    )
+    XCTAssertTrue(result.succeeded)
+    XCTAssertEqual(result.output, "All tests passed")
   }
 
   func testListsProjectDocumentsWithEncodedProjectID() async throws {

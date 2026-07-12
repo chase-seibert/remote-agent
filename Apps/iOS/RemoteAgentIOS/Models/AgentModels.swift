@@ -24,6 +24,23 @@ struct AgentMessage: Identifiable, Codable, Hashable, Sendable {
   let text: String
   let createdAt: Date
   let state: MessageState
+  let projectCommandResultID: UUID?
+
+  init(
+    id: UUID,
+    role: MessageRole,
+    text: String,
+    createdAt: Date,
+    state: MessageState,
+    projectCommandResultID: UUID? = nil
+  ) {
+    self.id = id
+    self.role = role
+    self.text = text
+    self.createdAt = createdAt
+    self.state = state
+    self.projectCommandResultID = projectCommandResultID
+  }
 }
 
 struct AgentSession: Identifiable, Codable, Hashable, Sendable {
@@ -39,6 +56,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   var currentReasoning: String?
   var isUnread: Bool
   var isPinned: Bool
+  var selectedMakeTarget: String?
 
   init(
     id: UUID,
@@ -52,7 +70,8 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     isRunning: Bool,
     currentReasoning: String? = nil,
     isUnread: Bool = false,
-    isPinned: Bool = false
+    isPinned: Bool = false,
+    selectedMakeTarget: String? = nil
   ) {
     self.id = id
     self.projectID = projectID
@@ -66,6 +85,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     self.currentReasoning = currentReasoning
     self.isUnread = isUnread
     self.isPinned = isPinned
+    self.selectedMakeTarget = selectedMakeTarget
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -81,6 +101,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case currentReasoning
     case isUnread
     case isPinned
+    case selectedMakeTarget
   }
 
   init(from decoder: Decoder) throws {
@@ -97,7 +118,14 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     currentReasoning = try container.decodeIfPresent(String.self, forKey: .currentReasoning)
     isUnread = try container.decodeIfPresent(Bool.self, forKey: .isUnread) ?? false
     isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+    selectedMakeTarget = try container.decodeIfPresent(String.self, forKey: .selectedMakeTarget)
   }
+
+  var hasPendingProjectCommand: Bool {
+    messages.contains { $0.projectCommandResultID != nil && $0.state == .pending }
+  }
+
+  var hasActiveWork: Bool { isRunning || hasPendingProjectCommand }
 }
 
 struct QueuedPrompt: Identifiable, Codable, Hashable, Sendable {

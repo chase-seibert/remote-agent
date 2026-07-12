@@ -277,7 +277,15 @@ enum CommitMessageSanitizer {
     }
     let wrappers = CharacterSet(charactersIn: "\"'`")
     message = message.trimmingCharacters(in: wrappers)
-    message = String(message.prefix(72)).trimmingCharacters(in: .whitespacesAndNewlines)
+    if message.count > 72 {
+      let prefix = String(message.prefix(72))
+      if let wordBoundary = prefix.lastIndex(where: \Character.isWhitespace) {
+        message = String(prefix[..<wordBoundary])
+      } else {
+        message = prefix
+      }
+    }
+    message = message.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !message.isEmpty else { throw ProjectCommandError.emptyCommitMessage }
     return message
   }
@@ -345,6 +353,59 @@ struct ProjectCommandService: Sendable {
       exitCode: result.exitCode,
       startedAt: result.startedAt,
       completedAt: result.completedAt
+    )
+  }
+
+  func runGitCommitAndPush(projectPath: String) async -> ProjectCommandOutcome {
+    let commit = await runGitCommit(projectPath: projectPath)
+    let title = commit.title.replacingOccurrences(
+      of: "Git Commit",
+      with: "Git Commit & Push"
+    )
+    guard commit.succeeded else {
+      return ProjectCommandOutcome(
+        kind: .gitCommit,
+        title: title,
+        command: commit.command,
+        output: commit.output,
+        exitCode: commit.exitCode,
+        startedAt: commit.startedAt,
+        completedAt: commit.completedAt
+      )
+    }
+
+    let upstream = await runner.run(
+      executable: "/usr/bin/git",
+      arguments: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      currentDirectory: projectPath,
+      displayCommand: "git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}'"
+    )
+    guard upstream.exitCode == 0 else {
+      return ProjectCommandOutcome(
+        kind: .gitCommit,
+        title: title,
+        command: commit.command,
+        output: commit.output,
+        exitCode: commit.exitCode,
+        startedAt: commit.startedAt,
+        completedAt: upstream.completedAt
+      )
+    }
+
+    let push = await runner.run(
+      executable: "/usr/bin/git",
+      arguments: ["push"],
+      currentDirectory: projectPath,
+      displayCommand: "git push"
+    )
+    return ProjectCommandOutcome(
+      kind: .gitCommit,
+      title: title,
+      command: "\(commit.command) && \(push.command)",
+      output: combinedOutput(commit.output, push.output),
+      exitCode: push.exitCode,
+      startedAt: commit.startedAt,
+      completedAt: push.completedAt
     )
   }
 

@@ -2,14 +2,37 @@ import SwiftUI
 
 struct MessageRow: View {
   let message: AgentMessage
+  let onOpenDetails: (() -> Void)?
+
+  init(message: AgentMessage, onOpenDetails: (() -> Void)? = nil) {
+    self.message = message
+    self.onOpenDetails = onOpenDetails
+  }
 
   var body: some View {
+    Group {
+      if let onOpenDetails {
+        Button(action: onOpenDetails) { rowContent }
+          .buttonStyle(.plain)
+      } else {
+        rowContent
+      }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityHint(onOpenDetails == nil ? "" : "Opens command output")
+  }
+
+  private var rowContent: some View {
     HStack(alignment: .top) {
       if message.role == .user { Spacer(minLength: 48) }
 
       VStack(alignment: .leading, spacing: 7) {
         HStack(spacing: 6) {
-          Image(systemName: roleIcon)
+          if message.state == .pending {
+            ProgressView().controlSize(.small)
+          } else {
+            Image(systemName: roleIcon)
+          }
           Text(roleTitle)
           if message.state == .failed {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -25,6 +48,12 @@ struct MessageRow: View {
         SafeMarkdownView(text: message.text)
           .foregroundStyle(message.role == .user ? Color.white : Color.primary)
           .textSelection(.enabled)
+
+        if onOpenDetails != nil {
+          Label("View Output", systemImage: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+        }
       }
       .padding(12)
       .background(backgroundColor, in: RoundedRectangle(cornerRadius: 16))
@@ -32,14 +61,15 @@ struct MessageRow: View {
       if message.role != .user { Spacer(minLength: 24) }
     }
     .padding(.horizontal)
-    .accessibilityElement(children: .contain)
   }
 
   private var roleTitle: String {
     switch message.role {
-    case .user: "You"
-    case .assistant: "Agent"
-    case .system: message.state == .failed ? "Failed" : "System"
+    case .user: return "You"
+    case .assistant: return "Agent"
+    case .system:
+      if message.state == .pending { return "Running" }
+      return message.state == .failed ? "Failed" : "System"
     }
   }
 
@@ -52,10 +82,13 @@ struct MessageRow: View {
   }
 
   private var headerColor: Color {
-    message.state == .failed ? .red : (message.role == .user ? .white.opacity(0.9) : .secondary)
+    if message.state == .pending { return .green }
+    return message.state == .failed
+      ? .red : (message.role == .user ? .white.opacity(0.9) : .secondary)
   }
 
   private var backgroundColor: Color {
+    if message.state == .pending { return .green.opacity(0.1) }
     if message.state == .failed { return .red.opacity(0.12) }
     return message.role == .user ? .accentColor : Color(uiColor: .secondarySystemBackground)
   }

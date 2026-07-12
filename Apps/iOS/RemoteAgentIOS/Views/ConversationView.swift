@@ -1,3 +1,4 @@
+import RemoteAgentProtocol
 import SwiftUI
 
 struct ConversationView: View {
@@ -10,6 +11,7 @@ struct ConversationView: View {
   var scrollRequestID: UUID? = nil
   @State private var linkedDocument: ProjectDocument?
   @State private var showingDocuments = false
+  @State private var selectedCommandResult: ProjectCommandResultSelection?
 
   var body: some View {
     ScrollViewReader { proxy in
@@ -24,9 +26,19 @@ struct ConversationView: View {
             .padding(.top, 72)
           } else {
             ForEach(session.messages) { message in
-              MessageRow(message: message)
-                .id(message.id)
-                .accessibilityIdentifier(accessibilityIdentifier(for: message))
+              MessageRow(
+                message: message,
+                onOpenDetails: message.projectCommandResultID.map { resultID in
+                  {
+                    selectedCommandResult = ProjectCommandResultSelection(
+                      sessionID: session.id,
+                      resultID: resultID
+                    )
+                  }
+                }
+              )
+              .id(message.id)
+              .accessibilityIdentifier(accessibilityIdentifier(for: message))
             }
           }
 
@@ -66,6 +78,7 @@ struct ConversationView: View {
         guard !Task.isCancelled else { return }
         scrollToBottom(proxy)
         markSessionReadIfVisible()
+        await model.loadProjectCommandConfiguration(sessionID: session.id)
       }
       .onChange(of: scrollRequestID) { _, requestID in
         guard requestID != nil else { return }
@@ -115,7 +128,14 @@ struct ConversationView: View {
       }
     }
     .safeAreaInset(edge: .bottom, spacing: 0) {
-      ComposerView(sessionID: session.id, isRunning: session.isRunning)
+      VStack(spacing: 0) {
+        ProjectCommandBar(session: session)
+        ComposerView(
+          sessionID: session.id,
+          isRunning: session.hasActiveWork
+            || model.isProjectCommandRunning(sessionID: session.id)
+        )
+      }
     }
     .environment(\.openURL, OpenURLAction { handleLink($0) })
     .sheet(item: $linkedDocument) { document in
@@ -129,6 +149,13 @@ struct ConversationView: View {
     .sheet(isPresented: $showingDocuments) {
       ProjectDocumentsView(project: project)
         .environmentObject(model)
+    }
+    .sheet(item: $selectedCommandResult) { selection in
+      ProjectCommandOutputView(
+        sessionID: selection.sessionID,
+        resultID: selection.resultID
+      )
+      .environmentObject(model)
     }
     .onChange(of: scenePhase) { _, phase in
       if phase == .active { markSessionReadIfVisible() }
@@ -180,6 +207,163 @@ struct ConversationView: View {
         name: URL(fileURLWithPath: session.projectPath).lastPathComponent,
         path: session.projectPath
       )
+  }
+}
+
+private struct ProjectCommandResultSelection: Identifiable {
+  let sessionID: UUID
+  let resultID: UUID
+  var id: UUID { resultID }
+}
+
+private struct ProjectCommandBar: View {
+  @EnvironmentObject private var model: AppModel
+  let session: AgentSession
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Menu {
+        if targets.isEmpty {
+          Text("No Makefile targets")
+        } else {
+          Picker("Make Target", selection: targetBinding) {
+            ForEach(targets, id: \.self) { target in
+              Text(target).tag(target)
+            }
+          }
+        }
+      } label: {
+        Label(activeTarget ?? "Make", systemImage: "hammer")
+      } primaryAction: {
+        Task { await model.runProjectCommand(.make, sessionID: session.id) }
+      }
+      .disabled(commandsDisabled || activeTarget == nil)
+      .accessibilityLabel(activeTarget.map { "Run make \($0)" } ?? "Make")
+
+      Spacer(minLength: 0)
+
+      Button("Commit & Push", systemImage: "arrow.up.circle") {
+        Task { await model.runProjectCommand(.gitCommitAndPush, sessionID: session.id) }
+      }
+      .disabled(commandsDisabled)
+    }
+    .font(.subheadline.weight(.semibold))
+    .padding(.horizontal)
+    .padding(.vertical, 8)
+    .background(.bar)
+  }
+
+  private var configuration: ProjectCommandConfigurationResponse? {
+    model.projectCommandConfiguration(sessionID: session.id)
+  }
+
+  private var targets: [String] { configuration?.makeTargets ?? [] }
+  private var activeTarget: String? {
+    configuration?.selectedMakeTarget ?? session.selectedMakeTarget
+  }
+  private var commandsDisabled: Bool {
+    !model.connectionState.isConnected || session.hasActiveWork
+      || model.isProjectCommandRunning(sessionID: session.id)
+  }
+  private var targetBinding: Binding<String> {
+    Binding(
+      get: { activeTarget ?? targets.first ?? "" },
+      set: { target in
+        Task { await model.selectMakeTarget(target, sessionID: session.id) }
+      }
+    )
+  }
+}
+
+private struct ProjectCommandOutputView: View {
+  @EnvironmentObject private var model: AppModel
+  @Environment(\.dismiss) private var dismiss
+  let sessionID: UUID
+  let resultID: UUID
+  @State private var result: RemoteProjectCommandResult?
+  @State private var errorMessage: String?
+
+  var body: some View {
+    NavigationStack {
+      Group {
+        if let result {
+          resultView(result)
+        } else if let errorMessage {
+          ContentUnavailableView(
+            "Output Unavailable",
+            systemImage: "exclamationmark.triangle",
+            description: Text(errorMessage)
+          )
+        } else {
+          ProgressView("Loading output…")
+        }
+      }
+      .navigationTitle(result?.title ?? "Command Output")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Done") { dismiss() }
+        }
+      }
+    }
+    .task { await loadResultUntilComplete() }
+  }
+
+  private func resultView(_ result: RemoteProjectCommandResult) -> some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 16) {
+        Label {
+          Text(result.isRunning ? "Running" : result.succeeded ? "Succeeded" : "Failed")
+        } icon: {
+          if result.isRunning {
+            ProgressView().controlSize(.small)
+          } else {
+            Image(systemName: result.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
+          }
+        }
+        .font(.headline)
+        .foregroundStyle(result.isRunning || result.succeeded ? .green : .red)
+
+        LabeledContent("Command") {
+          Text(result.command).font(.system(.subheadline, design: .monospaced))
+        }
+        LabeledContent("Project") { Text(result.projectPath) }
+        LabeledContent("Exit Status") {
+          Text(result.isRunning ? "Running" : result.exitCode.map(String.init) ?? "Failed")
+        }
+
+        Divider()
+
+        Text(result.output.isEmpty ? "Command completed without output." : result.output)
+          .font(.system(.callout, design: .monospaced))
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(12)
+          .background(
+            Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+      }
+      .padding()
+    }
+  }
+
+  private func loadResultUntilComplete() async {
+    while !Task.isCancelled {
+      do {
+        let loaded = try await model.projectCommandResult(
+          sessionID: sessionID,
+          resultID: resultID
+        )
+        result = loaded
+        errorMessage = nil
+        guard loaded.isRunning else { return }
+        try await Task.sleep(for: .seconds(1))
+      } catch is CancellationError {
+        return
+      } catch {
+        errorMessage = error.localizedDescription
+        return
+      }
+    }
   }
 }
 

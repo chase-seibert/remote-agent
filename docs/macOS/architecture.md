@@ -5,7 +5,7 @@ Remote Agent is a dependency-free Swift package that is packaged as a convention
 ```mermaid
 flowchart LR
     U["macOS SwiftUI UI"] --> M["AppModel"]
-    I["Future iOS client"] -->|"HTTP + bearer token"| H["Network.framework server"]
+    I["iOS client"] -->|"HTTP + bearer token"| H["Network.framework server"]
     H --> M
     M --> P["SessionStore JSON"]
     M --> C["CodexCLIClient"]
@@ -14,7 +14,7 @@ flowchart LR
     X --> G["Existing Codex config and plugins"]
     M --> R["ProjectCommandService"]
     R -->|"make target"| W
-    R -->|"git commit / git push"| W
+    R -->|"git commit, optional git push"| W
     R --> F["Apple Foundation Models"]
     M --> Q["ProjectCommandResultStore JSON"]
 ```
@@ -26,8 +26,9 @@ flowchart LR
 - Session renames are validated metadata updates persisted through `SessionStore`; they do not change activity timestamps or interrupt active turns.
 - `ProjectScanner` invokes `/usr/bin/find` to list immediate child directories of the configured root. Codex currently has no stable, non-interactive machine-readable project-list command.
 - `CodexCLIClient` launches the configured Codex executable with `Process`, sends prompts over standard input, line-buffers streamed JSONL events, records the returned thread ID, publishes completed reasoning summaries during a turn, and resumes the thread on future turns. It requests summary reasoning while explicitly keeping raw reasoning hidden.
-- `ProjectCommandService` discovers Make targets from `.PHONY` declarations with a conservative target-declaration fallback, invokes `/usr/bin/make` and `/usr/bin/git` directly without a shell, merges stdout and stderr, and caps retained output at 512 KB per run. Commit first invokes `git add --all`. On macOS 26 or later it gives the resulting staged file summary and a bounded staged diff to Apple's on-device Foundation Models framework, using greedy sampling and a 24-token response limit, then passes the sanitized one-line subject to `git commit -m`.
-- `ProjectCommandResultStore` keeps the 200 most recent local command results under Application Support. Transcript messages contain only a running, success, or failure placeholder keyed by the same UUID; completion updates the original row in place. Full commands and output remain Mac-local and are never encoded into the session API.
+- `ProjectCommandService` discovers Make targets from `.PHONY` declarations with a conservative target-declaration fallback, invokes `/usr/bin/make` and `/usr/bin/git` directly without a shell, merges stdout and stderr, and caps retained output at 512 KB per run. Commit & Push first invokes `git add --all`. On macOS 26 or later it gives the resulting staged file summary and a bounded staged diff to Apple's on-device Foundation Models framework, using greedy sampling and a 24-token response limit, then passes the sanitized one-line subject to `git commit -m`. After a successful commit, it resolves the current branch's upstream and invokes ordinary `git push` only when that upstream exists; no upstream is treated as a successful commit with no push attempt.
+- `ProjectCommandResultStore` keeps the 200 most recent local command results under Application Support. Transcript messages contain only a running, success, or failure placeholder keyed by the same UUID; completion updates the original row in place. Full commands and output are excluded from session snapshots and exposed only through an authenticated, session-scoped result endpoint.
+- The active Make target is session metadata persisted by `SessionStore`. Legacy per-session target preferences migrate into the session record at launch, and both toolbar and Project-menu pickers read that same authoritative value.
 - `SessionStore` atomically persists Remote Agent's session metadata and visible transcripts under Application Support. Codex separately persists its own conversation/tool state.
 - `SpeechTranscriber` uses `SFSpeechRecognizer` and `AVAudioEngine`; speech is only an input method and does not change the agent protocol.
 - `LocalLinkResolver` recognizes absolute, `file://`, and project-relative filesystem links. Markdown, HTML, and supported source-code files are routed to typed SwiftUI document windows; other local files use Launch Services, and network URLs remain system-handled.
@@ -52,4 +53,4 @@ flowchart LR
 - Because HTTP connections are short-lived, “mobile active” means a non-loopback request reached the Mac within the last 30 seconds; it does not imply a continuously connected socket.
 - The HTTP server has bearer-token authentication but no TLS. It is intended only for a trusted local network. Bonjour provides discovery but not trust; a later release should add key pairing, TLS, and token rotation UX before enabling broader access.
 - There is no approval bridge in version one. The effective Codex sandbox and approval behavior comes from the user's Codex CLI configuration; Remote Agent never passes a dangerous bypass flag.
-- Project commands require an explicit toolbar or Project-menu action, run one at a time per session, and are disabled while its Codex turn is active. Commit stages all changes, Push never forces, and neither action uses a shell. Foundation Models availability depends on macOS 26, Apple Intelligence support, enablement, and model readiness; unavailable generation produces a failed placeholder rather than falling back to a remote model.
+- Project commands require an explicit toolbar or Project-menu action, run one at a time per session, and are disabled while its Codex turn is active. Commit & Push stages all changes and never forces; its push step is silently omitted when the current branch has no upstream. No project action uses a shell. Foundation Models availability depends on macOS 26, Apple Intelligence support, enablement, and model readiness; unavailable generation produces a failed placeholder rather than falling back to a remote model.

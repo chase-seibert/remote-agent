@@ -26,7 +26,6 @@ final class AppModel: ObservableObject {
   @Published private(set) var apiActivityLog: [APIActivityEntry] = []
   @Published private(set) var projectCommandResults: [UUID: ProjectCommandResult] = [:]
   @Published private(set) var runningProjectCommandSessionIDs: Set<UUID> = []
-  @Published private(set) var selectedMakeTargets: [UUID: String] = [:]
   @Published var presentedError: String?
 
   let settings: AppSettings
@@ -86,6 +85,11 @@ final class AppModel: ObservableObject {
       for index in sessions.indices {
         sessions[index].isRunning = false
         sessions[index].currentReasoning = nil
+        if sessions[index].selectedMakeTarget == nil {
+          sessions[index].selectedMakeTarget = settings.selectedMakeTarget(
+            sessionID: sessions[index].id
+          )
+        }
       }
       persist()
     } catch {
@@ -95,6 +99,7 @@ final class AppModel: ObservableObject {
       let results = try await projectCommandResultStore.load()
       let messageIDs = Set(sessions.flatMap(\.messages).map(\.id))
       var repairedInterruptedCommand = false
+      var linkedLegacyCommandMessage = false
       let retainedResults = results.filter { messageIDs.contains($0.id) }.map { result in
         guard result.isRunning else { return result }
         repairedInterruptedCommand = true
@@ -122,12 +127,22 @@ final class AppModel: ObservableObject {
           completedAt: completedAt
         )
       }
+      for result in retainedResults {
+        guard let sessionIndex = sessions.firstIndex(where: { $0.id == result.sessionID }),
+          let messageIndex = sessions[sessionIndex].messages.firstIndex(where: {
+            $0.id == result.id
+          }),
+          sessions[sessionIndex].messages[messageIndex].projectCommandResultID == nil
+        else { continue }
+        sessions[sessionIndex].messages[messageIndex].projectCommandResultID = result.id
+        linkedLegacyCommandMessage = true
+      }
       projectCommandResults = Dictionary(
         retainedResults.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
       if retainedResults.count != results.count || repairedInterruptedCommand {
         try await projectCommandResultStore.save(retainedResults)
       }
-      if repairedInterruptedCommand { persist() }
+      if repairedInterruptedCommand || linkedLegacyCommandMessage { persist() }
     } catch {
       presentedError = "Could not load project command results: \(error.localizedDescription)"
     }
@@ -224,7 +239,6 @@ final class AppModel: ObservableObject {
       throw RemoteAgentError.sessionBusy
     }
     let deleted = sessions.remove(at: index)
-    selectedMakeTargets.removeValue(forKey: id)
     settings.clearSelectedMakeTarget(sessionID: id)
     projectCommandResults = projectCommandResults.filter { $0.value.sessionID != id }
     persistProjectCommandResults()
@@ -343,17 +357,19 @@ final class AppModel: ObservableObject {
   func activeMakeTarget(for session: AgentSession) -> String? {
     let targets = makeTargets(for: session)
     guard !targets.isEmpty else { return nil }
-    let selected =
-      selectedMakeTargets[session.id]
-      ?? settings.selectedMakeTarget(sessionID: session.id)
+    let selected = sessions.first(where: { $0.id == session.id })?.selectedMakeTarget
     if let selected, targets.contains(selected) { return selected }
     return ["build", "test", "run"].first(where: targets.contains) ?? targets.first
   }
 
   func selectMakeTarget(_ target: String, for session: AgentSession) {
-    guard makeTargets(for: session).contains(target) else { return }
-    selectedMakeTargets[session.id] = target
-    settings.setSelectedMakeTarget(target, sessionID: session.id)
+    guard makeTargets(for: session).contains(target),
+      let index = sessions.firstIndex(where: { $0.id == session.id })
+    else { return }
+    var updatedSessions = sessions
+    updatedSessions[index].selectedMakeTarget = target
+    sessions = updatedSessions
+    persist()
   }
 
   func projectCommandResult(messageID: UUID) -> ProjectCommandResult? {
@@ -383,10 +399,15 @@ final class AppModel: ObservableObject {
     await runProjectCommand(sessionID: sessionID, action: .gitPush)
   }
 
+  func runGitCommitAndPush(sessionID: UUID) async {
+    await runProjectCommand(sessionID: sessionID, action: .gitCommitAndPush)
+  }
+
   private enum ProjectCommandAction {
     case make(String)
     case gitCommit
     case gitPush
+    case gitCommitAndPush
 
     var descriptor: ProjectCommandDescriptor {
       switch self {
@@ -410,6 +431,13 @@ final class AppModel: ObservableObject {
           title: "Git Push",
           command: "git push",
           runningText: "Running git push… Click to view output."
+        )
+      case .gitCommitAndPush:
+        ProjectCommandDescriptor(
+          kind: .gitCommit,
+          title: "Git Commit & Push",
+          command: "git add --all && git commit && git push",
+          runningText: "Running git add, commit, and push… Click to view output."
         )
       }
     }
@@ -451,6 +479,8 @@ final class AppModel: ObservableObject {
       outcome = await projectCommands.runGitCommit(projectPath: session.projectPath)
     case .gitPush:
       outcome = await projectCommands.runGitPush(projectPath: session.projectPath)
+    case .gitCommitAndPush:
+      outcome = await projectCommands.runGitCommitAndPush(projectPath: session.projectPath)
     }
     await recordProjectCommandFinished(
       outcome,
@@ -486,7 +516,8 @@ final class AppModel: ObservableObject {
         role: .system,
         text: descriptor.runningText,
         createdAt: startedAt,
-        state: .pending
+        state: .pending,
+        projectCommandResultID: messageID
       )
     )
     sessions[index].updatedAt = startedAt
@@ -682,12 +713,63 @@ final class AppModel: ObservableObject {
       if request.method == "GET", parts.count == 3 {
         return .json(session)
       }
+      if request.method == "GET", parts.count == 4, parts[3] == "project-commands" {
+        return .json(
+          ProjectCommandConfigurationResponse(
+            sessionID: sessionID,
+            makeTargets: makeTargets(for: session),
+            selectedMakeTarget: activeMakeTarget(for: session),
+            isRunning: isProjectCommandRunning(sessionID: sessionID)
+          ))
+      }
+      if request.method == "GET", parts.count == 5, parts[3] == "project-commands",
+        let resultID = UUID(uuidString: parts[4]),
+        let result = projectCommandResults[resultID], result.sessionID == sessionID
+      {
+        return .json(result.remoteResult)
+      }
+      if request.method == "POST", parts.count == 4, parts[3] == "project-commands" {
+        guard !session.isRunning,
+          !runningProjectCommandSessionIDs.contains(sessionID)
+        else {
+          return .json(APIErrorBody(error: "Session is busy"), status: 409)
+        }
+        guard
+          let body = try? JSONDecoder().decode(
+            RemoteAgentProtocol.ProjectCommandRequest.self,
+            from: request.body
+          )
+        else {
+          return .json(APIErrorBody(error: "Invalid project command"), status: 400)
+        }
+        switch body.action {
+        case .make:
+          guard let target = body.target ?? activeMakeTarget(for: session),
+            makeTargets(for: session).contains(target)
+          else {
+            return .json(APIErrorBody(error: "Invalid Make target"), status: 400)
+          }
+          selectMakeTarget(target, for: session)
+          Task { @MainActor [weak self] in
+            await self?.runActiveMakeTarget(sessionID: sessionID)
+          }
+        case .gitCommit:
+          Task { @MainActor [weak self] in await self?.runGitCommit(sessionID: sessionID) }
+        case .gitPush:
+          Task { @MainActor [weak self] in await self?.runGitPush(sessionID: sessionID) }
+        case .gitCommitAndPush:
+          Task { @MainActor [weak self] in
+            await self?.runGitCommitAndPush(sessionID: sessionID)
+          }
+        }
+        return .json(AcceptedBody(sessionID: sessionID, status: "accepted"), status: 202)
+      }
       if request.method == "PATCH", parts.count == 3 {
         guard let body = try? JSONDecoder().decode(SessionUpdateRequest.self, from: request.body),
-          body.title != nil || body.isPinned != nil
+          body.title != nil || body.isPinned != nil || body.selectedMakeTarget != nil
         else {
           return .json(
-            APIErrorBody(error: "A title or isPinned field is required"),
+            APIErrorBody(error: "A title, isPinned, or selectedMakeTarget field is required"),
             status: 400
           )
         }
@@ -698,6 +780,16 @@ final class AppModel: ObservableObject {
           }
           if let isPinned = body.isPinned {
             updated = try setSessionPinned(sessionID, isPinned: isPinned)
+          }
+          if let target = body.selectedMakeTarget {
+            guard makeTargets(for: session).contains(target) else {
+              return .json(APIErrorBody(error: "Invalid Make target"), status: 400)
+            }
+            selectMakeTarget(target, for: session)
+            guard let selected = sessions.first(where: { $0.id == sessionID }) else {
+              return .json(APIErrorBody(error: "Session not found"), status: 404)
+            }
+            updated = selected
           }
           return .json(updated)
         } catch {

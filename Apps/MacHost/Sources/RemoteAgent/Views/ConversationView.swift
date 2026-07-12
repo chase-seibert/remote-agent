@@ -98,20 +98,21 @@ private struct ProjectCommandToolbar: View {
       if targets.isEmpty {
         Text("No Makefile targets")
       } else {
-        ForEach(targets, id: \.self) { target in
-          Button {
-            model.selectMakeTarget(target, for: session)
-          } label: {
-            if target == activeTarget {
-              Label(target, systemImage: "checkmark")
-            } else {
-              Text(target)
-            }
+        Picker("Make Target", selection: activeTargetBinding) {
+          ForEach(targets, id: \.self) { target in
+            Text(target).tag(target)
           }
         }
+        .pickerStyle(.inline)
+        .labelsHidden()
       }
     } label: {
-      Label(activeTarget.map { "Make \($0)" } ?? "Make", systemImage: "hammer")
+      HStack(spacing: 6) {
+        Image(systemName: "hammer")
+        Text(activeTarget ?? "Make")
+          .lineLimit(1)
+      }
+      .fixedSize(horizontal: true, vertical: false)
     } primaryAction: {
       Task { await model.runActiveMakeTarget(sessionID: session.id) }
     }
@@ -119,24 +120,24 @@ private struct ProjectCommandToolbar: View {
     .help(activeTarget.map { "Run make \($0)" } ?? "No Makefile targets available")
 
     Button {
-      Task { await model.runGitCommit(sessionID: session.id) }
+      Task { await model.runGitCommitAndPush(sessionID: session.id) }
     } label: {
-      Label("Commit", systemImage: "checkmark.circle")
+      Label("Commit & Push", systemImage: "arrow.up.circle")
     }
     .disabled(commandsDisabled)
-    .help("Add and commit all changes using an Apple Foundation Models commit message")
-
-    Button {
-      Task { await model.runGitPush(sessionID: session.id) }
-    } label: {
-      Label("Push", systemImage: "arrow.up.circle")
-    }
-    .disabled(commandsDisabled)
-    .help("Push the current Git branch")
+    .help(
+      "Add and commit all changes using an Apple Foundation Models message, then push when an upstream is configured"
+    )
   }
 
   private var targets: [String] { model.makeTargets(for: session) }
   private var activeTarget: String? { model.activeMakeTarget(for: session) }
+  private var activeTargetBinding: Binding<String> {
+    Binding(
+      get: { activeTarget ?? targets.first ?? "" },
+      set: { model.selectMakeTarget($0, for: session) }
+    )
+  }
   private var commandsDisabled: Bool {
     session.isRunning || model.isProjectCommandRunning(sessionID: session.id)
   }

@@ -15,6 +15,42 @@ protocol RemoteAPIClientProtocol: Sendable {
     -> ProjectDocumentContent
   func createSession(projectID: String) async throws -> AgentSession
   func sendMessage(_ text: String, sessionID: UUID) async throws -> AcceptedResponse
+  func projectCommandConfiguration(sessionID: UUID) async throws
+    -> ProjectCommandConfigurationResponse
+  func selectMakeTarget(_ target: String, sessionID: UUID) async throws -> AgentSession
+  func runProjectCommand(
+    _ action: ProjectCommandAction,
+    target: String?,
+    sessionID: UUID
+  ) async throws -> AcceptedResponse
+  func projectCommandResult(sessionID: UUID, resultID: UUID) async throws
+    -> RemoteProjectCommandResult
+}
+
+extension RemoteAPIClientProtocol {
+  func projectCommandConfiguration(sessionID _: UUID) async throws
+    -> ProjectCommandConfigurationResponse
+  {
+    throw RemoteAPIError.notConnected
+  }
+
+  func selectMakeTarget(_: String, sessionID _: UUID) async throws -> AgentSession {
+    throw RemoteAPIError.notConnected
+  }
+
+  func runProjectCommand(
+    _: ProjectCommandAction,
+    target _: String?,
+    sessionID _: UUID
+  ) async throws -> AcceptedResponse {
+    throw RemoteAPIError.notConnected
+  }
+
+  func projectCommandResult(sessionID _: UUID, resultID _: UUID) async throws
+    -> RemoteProjectCommandResult
+  {
+    throw RemoteAPIError.notConnected
+  }
 }
 
 final class RemoteAPIClient: RemoteAPIClientProtocol, @unchecked Sendable {
@@ -120,6 +156,42 @@ final class RemoteAPIClient: RemoteAPIClientProtocol, @unchecked Sendable {
       method: "POST",
       body: SendMessageRequest(text: text),
       expectedStatus: 202
+    )
+  }
+
+  func projectCommandConfiguration(sessionID: UUID) async throws
+    -> ProjectCommandConfigurationResponse
+  {
+    try await request(path: RemoteAgentEndpoint.sessionProjectCommands(sessionID))
+  }
+
+  func selectMakeTarget(_ target: String, sessionID: UUID) async throws -> AgentSession {
+    try await request(
+      path: RemoteAgentEndpoint.session(sessionID),
+      method: "PATCH",
+      body: SessionUpdateRequest(selectedMakeTarget: target),
+      expectedStatus: 200
+    )
+  }
+
+  func runProjectCommand(
+    _ action: ProjectCommandAction,
+    target: String?,
+    sessionID: UUID
+  ) async throws -> AcceptedResponse {
+    try await request(
+      path: RemoteAgentEndpoint.sessionProjectCommands(sessionID),
+      method: "POST",
+      body: ProjectCommandRequest(action: action, target: target),
+      expectedStatus: 202
+    )
+  }
+
+  func projectCommandResult(sessionID: UUID, resultID: UUID) async throws
+    -> RemoteProjectCommandResult
+  {
+    try await request(
+      path: RemoteAgentEndpoint.sessionProjectCommandResult(sessionID, resultID: resultID)
     )
   }
 

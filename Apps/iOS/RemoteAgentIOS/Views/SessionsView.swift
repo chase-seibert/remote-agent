@@ -138,7 +138,7 @@ struct RecentSessionsView: View {
     Button("Delete", systemImage: "trash", role: .destructive) {
       sessionToDelete = session
     }
-    .disabled(session.isRunning)
+    .disabled(session.hasActiveWork)
   }
 }
 
@@ -164,7 +164,7 @@ private struct RecentSessionRow: View {
 
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
-      if session.isRunning {
+      if session.hasActiveWork {
         RunningAgentIcon()
       } else {
         Image(systemName: "bubble.left.fill")
@@ -196,7 +196,7 @@ private struct RecentSessionRow: View {
         .foregroundStyle(.secondary)
 
         HStack(spacing: 6) {
-          if session.isRunning {
+          if session.hasActiveWork {
             SessionStatusBadge(title: "Running", color: .green)
           }
           if session.messages.last?.state == .failed {
@@ -205,7 +205,7 @@ private struct RecentSessionRow: View {
           if session.isUnread {
             SessionStatusBadge(title: "Unread", color: .blue, showsDot: true)
           }
-          if !session.isRunning, session.messages.last?.state != .failed, !session.isUnread {
+          if !session.hasActiveWork, session.messages.last?.state != .failed, !session.isUnread {
             SessionStatusBadge(title: "Read", color: .secondary)
           }
         }
@@ -219,7 +219,7 @@ private struct RecentSessionRow: View {
 
   private var accessibilityValue: String {
     var values = [projectName, session.updatedAt.formatted(date: .abbreviated, time: .shortened)]
-    if session.isRunning { values.append("Running") }
+    if session.hasActiveWork { values.append("Running") }
     if session.messages.last?.state == .failed { values.append("Failed") }
     if session.isPinned { values.append("Pinned") }
     values.append(session.isUnread ? "Unread" : "Read")
