@@ -1,3 +1,4 @@
+import RemoteAgentProtocol
 import XCTest
 
 @testable import RemoteAgentIOS
@@ -289,7 +290,7 @@ final class UnreadBadgeTests: XCTestCase {
 
 @MainActor
 final class PromptQueueTests: XCTestCase {
-  func testPromptQueuesWithoutCallingServerWhileSessionRuns() async throws {
+  func testPromptQueuesOnServerWhileSessionRuns() async throws {
     let context = makeContext(isRunning: true)
 
     let didQueue = await context.model.sendPrompt("Follow up", to: context.session.id)
@@ -299,26 +300,34 @@ final class PromptQueueTests: XCTestCase {
       context.model.queuedPrompts(sessionID: context.session.id).map(\.text),
       ["Follow up"]
     )
+    let queuedTexts = await context.client.queuedTexts
+    XCTAssertEqual(queuedTexts, ["Follow up"])
     let sentMessages = await context.client.sentMessages
     XCTAssertTrue(sentMessages.isEmpty)
   }
 
-  func testIdleSessionDispatchesOnlyFirstPersistedPrompt() async throws {
-    let context = makeContext(isRunning: false, queuedTexts: ["First", "Second"])
+  func testQueuedPromptCanBeEditedAndRemovedOnServer() async throws {
+    let context = makeContext(isRunning: true, queuedTexts: ["Original"])
+    let prompt = try XCTUnwrap(context.model.queuedPrompts(sessionID: context.session.id).first)
 
-    context.model.selectSession(context.session.id)
-    for _ in 0..<100 {
-      if !(await context.client.sentMessages).isEmpty { break }
-      try await Task.sleep(for: .milliseconds(10))
-    }
-
-    let sentMessages = await context.client.sentMessages
-    XCTAssertEqual(sentMessages, ["First"])
+    let didUpdate = await context.model.updateQueuedPrompt(
+      prompt.id,
+      text: "Edited on the Mac",
+      sessionID: context.session.id
+    )
+    XCTAssertTrue(didUpdate)
     XCTAssertEqual(
       context.model.queuedPrompts(sessionID: context.session.id).map(\.text),
-      ["Second"]
+      ["Edited on the Mac"]
     )
-    XCTAssertTrue(context.model.selectedSession?.isRunning == true)
+    let updatedTexts = await context.client.updatedTexts
+    XCTAssertEqual(updatedTexts, ["Edited on the Mac"])
+
+    let didRemove = await context.model.removeQueuedPrompt(prompt.id, sessionID: context.session.id)
+    XCTAssertTrue(didRemove)
+    XCTAssertTrue(context.model.queuedPrompts(sessionID: context.session.id).isEmpty)
+    let deletedPromptIDs = await context.client.deletedPromptIDs
+    XCTAssertEqual(deletedPromptIDs, [prompt.id])
   }
 
   private func makeContext(
@@ -339,12 +348,8 @@ final class PromptQueueTests: XCTestCase {
       createdAt: Date(),
       updatedAt: Date(),
       messages: [],
-      isRunning: isRunning
-    )
-    store.saveQueuedPrompts(
-      queuedTexts.map { QueuedPrompt(text: $0) },
-      serverIdentifier: configuration.serverIdentifier,
-      sessionID: session.id
+      isRunning: isRunning,
+      queuedPrompts: queuedTexts.map { QueuedPrompt(text: $0) }
     )
     let client = PromptQueueAPIClient()
     let model = AppModel(
@@ -503,10 +508,30 @@ private actor ForegroundUnreadAPIClient: RemoteAPIClientProtocol {
 
 private actor PromptQueueAPIClient: RemoteAPIClientProtocol {
   private(set) var sentMessages: [String] = []
+  private(set) var queuedTexts: [String] = []
+  private(set) var updatedTexts: [String] = []
+  private(set) var deletedPromptIDs: [UUID] = []
 
   func sendMessage(_ text: String, sessionID: UUID) async throws -> AcceptedResponse {
     sentMessages.append(text)
     return AcceptedResponse(sessionID: sessionID, status: "accepted")
+  }
+
+  func enqueuePrompt(_ text: String, sessionID _: UUID) async throws -> QueuedPrompt {
+    queuedTexts.append(text)
+    return QueuedPrompt(text: text)
+  }
+
+  func updateQueuedPrompt(_ promptID: UUID, text: String, sessionID _: UUID) async throws
+    -> QueuedPrompt
+  {
+    updatedTexts.append(text)
+    return QueuedPrompt(id: promptID, text: text)
+  }
+
+  func deleteQueuedPrompt(_ promptID: UUID, sessionID _: UUID) async throws -> QueuedPrompt {
+    deletedPromptIDs.append(promptID)
+    return QueuedPrompt(id: promptID, text: "Deleted")
   }
 
   func health() async throws -> HealthResponse { throw RemoteAPIError.invalidData }

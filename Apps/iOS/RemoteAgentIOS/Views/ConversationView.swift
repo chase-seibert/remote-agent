@@ -438,6 +438,7 @@ private struct QueuedPromptsView: View {
   @EnvironmentObject private var model: AppModel
   let sessionID: UUID
   let prompts: [QueuedPrompt]
+  @State private var editingPrompt: QueuedPrompt?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -459,19 +460,22 @@ private struct QueuedPromptsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
 
-          if model.deliveringQueuedPromptIDs.contains(prompt.id) {
-            ProgressView()
-              .controlSize(.small)
-              .accessibilityLabel("Sending queued prompt")
-          } else {
+          HStack(spacing: 8) {
+            Button("Edit queued prompt", systemImage: "pencil.circle.fill") {
+              editingPrompt = prompt
+            }
+            .labelStyle(.iconOnly)
+            .foregroundStyle(.secondary)
+
             Button("Remove queued prompt", systemImage: "xmark.circle.fill") {
-              withAnimation {
-                model.removeQueuedPrompt(prompt.id, sessionID: sessionID)
+              Task {
+                _ = await model.removeQueuedPrompt(prompt.id, sessionID: sessionID)
               }
             }
             .labelStyle(.iconOnly)
             .foregroundStyle(.secondary)
           }
+          .disabled(!model.connectionState.isConnected)
         }
         .font(.callout)
 
@@ -485,6 +489,59 @@ private struct QueuedPromptsView: View {
     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
     .padding(.horizontal)
     .accessibilityElement(children: .contain)
+    .sheet(item: $editingPrompt) { prompt in
+      QueuedPromptEditor(sessionID: sessionID, prompt: prompt)
+        .environmentObject(model)
+    }
+  }
+}
+
+private struct QueuedPromptEditor: View {
+  @EnvironmentObject private var model: AppModel
+  @Environment(\.dismiss) private var dismiss
+  let sessionID: UUID
+  let prompt: QueuedPrompt
+  @State private var text: String
+  @State private var isSaving = false
+
+  init(sessionID: UUID, prompt: QueuedPrompt) {
+    self.sessionID = sessionID
+    self.prompt = prompt
+    _text = State(initialValue: prompt.text)
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section("Prompt") {
+          TextEditor(text: $text)
+            .frame(minHeight: 160)
+            .accessibilityLabel("Queued prompt text")
+        }
+      }
+      .navigationTitle("Edit Queued Prompt")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+            .disabled(isSaving)
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button(isSaving ? "Saving…" : "Save") {
+            isSaving = true
+            Task {
+              if await model.updateQueuedPrompt(prompt.id, text: text, sessionID: sessionID) {
+                dismiss()
+              } else {
+                isSaving = false
+              }
+            }
+          }
+          .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
+        }
+      }
+      .interactiveDismissDisabled(isSaving)
+    }
   }
 }
 

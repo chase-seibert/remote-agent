@@ -1,4 +1,4 @@
-.PHONY: setup format lint test build clean protocol-test mac-setup mac-format mac-lint mac-test mac-build mac-bundle mac-run ios-setup ios-format ios-lint ios-test ios-integration-test integration-test ios-build sim-build sim-launch sim-recent-sessions-fixture sim-recent-session-detail-fixture sim-rename-session-fixture sim-prompt-queue-fixture sim-long-conversation-fixture sim-long-conversation-from-list-fixture sim-long-conversation-from-session-fixture sim-code-preview-fixture sim-document-browser-fixture phone-build phone-install phone-launch phone-deploy
+.PHONY: setup format lint test build clean protocol-test mac-setup mac-format mac-lint mac-test mac-build mac-bundle mac-run ios-setup ios-format ios-lint ios-test ios-integration-test integration-test ios-build sim-build sim-launch sim-recent-sessions-fixture sim-recent-session-detail-fixture sim-rename-session-fixture sim-prompt-queue-fixture sim-long-conversation-fixture sim-long-conversation-from-list-fixture sim-long-conversation-from-session-fixture sim-code-preview-fixture sim-document-browser-fixture sim-connection-connected-fixture sim-connection-failed-fixture phone-build phone-install phone-launch phone-deploy
 
 setup: mac-setup ios-setup
 
@@ -64,7 +64,7 @@ ios-build sim-build:
 sim-launch:
 	$(MAKE) -C Apps/iOS sim-launch
 
-sim-recent-sessions-fixture sim-recent-session-detail-fixture sim-rename-session-fixture sim-prompt-queue-fixture sim-long-conversation-fixture sim-long-conversation-from-list-fixture sim-long-conversation-from-session-fixture sim-code-preview-fixture sim-document-browser-fixture:
+sim-recent-sessions-fixture sim-recent-session-detail-fixture sim-rename-session-fixture sim-prompt-queue-fixture sim-long-conversation-fixture sim-long-conversation-from-list-fixture sim-long-conversation-from-session-fixture sim-code-preview-fixture sim-document-browser-fixture sim-connection-connected-fixture sim-connection-failed-fixture:
 	$(MAKE) -C Apps/iOS $@
 
 phone-build:

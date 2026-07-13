@@ -34,7 +34,7 @@ final class AppModel: ObservableObject {
   private let projectCommandResultStore: ProjectCommandResultStore
   private let projectCommands: ProjectCommandService
   private let scanner = ProjectScanner()
-  private let codex = CodexCLIClient()
+  private let codex: any CodexSending
   private let documents = ProjectDocumentService()
   private var apiServer: RemoteAPIServer?
   private var apiRestartTask: Task<Void, Never>?
@@ -46,13 +46,15 @@ final class AppModel: ObservableObject {
     store: SessionStore = SessionStore(),
     activityStore: APIActivityStore = APIActivityStore(),
     projectCommandResultStore: ProjectCommandResultStore = ProjectCommandResultStore(),
-    projectCommands: ProjectCommandService = ProjectCommandService()
+    projectCommands: ProjectCommandService = ProjectCommandService(),
+    codex: any CodexSending = CodexCLIClient()
   ) {
     self.settings = settings
     self.store = store
     self.activityStore = activityStore
     self.projectCommandResultStore = projectCommandResultStore
     self.projectCommands = projectCommands
+    self.codex = codex
   }
 
   var selectedProject: AgentProject? {
@@ -153,6 +155,7 @@ final class AppModel: ObservableObject {
     }
     await refreshProjects()
     restartAPI()
+    scheduleQueuedPromptsForIdleSessions()
   }
 
   func refreshProjects() async {
@@ -273,6 +276,66 @@ final class AppModel: ObservableObject {
     return updated
   }
 
+  @discardableResult
+  func enqueuePrompt(_ text: String, sessionID: UUID) throws -> QueuedPrompt {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw RemoteAgentError.invalidRequest("Queued prompt text cannot be empty")
+    }
+    guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else {
+      throw RemoteAgentError.sessionNotFound
+    }
+    let prompt = QueuedPrompt(text: trimmed)
+    sessions[index].queuedPrompts.append(prompt)
+    persist()
+    Task { @MainActor [weak self] in
+      await self?.drainPromptQueueIfPossible(sessionID: sessionID)
+    }
+    return prompt
+  }
+
+  @discardableResult
+  func updateQueuedPrompt(_ promptID: UUID, sessionID: UUID, text: String) throws
+    -> QueuedPrompt
+  {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw RemoteAgentError.invalidRequest("Queued prompt text cannot be empty")
+    }
+    guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionID }) else {
+      throw RemoteAgentError.sessionNotFound
+    }
+    guard
+      let promptIndex = sessions[sessionIndex].queuedPrompts.firstIndex(where: {
+        $0.id == promptID
+      })
+    else {
+      throw RemoteAgentError.queuedPromptNotFound
+    }
+    let existing = sessions[sessionIndex].queuedPrompts[promptIndex]
+    let updated = QueuedPrompt(id: existing.id, text: trimmed, createdAt: existing.createdAt)
+    sessions[sessionIndex].queuedPrompts[promptIndex] = updated
+    persist()
+    return updated
+  }
+
+  @discardableResult
+  func removeQueuedPrompt(_ promptID: UUID, sessionID: UUID) throws -> QueuedPrompt {
+    guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionID }) else {
+      throw RemoteAgentError.sessionNotFound
+    }
+    guard
+      let promptIndex = sessions[sessionIndex].queuedPrompts.firstIndex(where: {
+        $0.id == promptID
+      })
+    else {
+      throw RemoteAgentError.queuedPromptNotFound
+    }
+    let removed = sessions[sessionIndex].queuedPrompts.remove(at: promptIndex)
+    persist()
+    return removed
+  }
+
   func sendPrompt(_ text: String, to sessionID: UUID? = nil) async {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
@@ -341,6 +404,27 @@ final class AppModel: ObservableObject {
       persist()
       presentedError = error.localizedDescription
     }
+    await drainPromptQueueIfPossible(sessionID: id)
+  }
+
+  private func scheduleQueuedPromptsForIdleSessions() {
+    for session in sessions where !session.queuedPrompts.isEmpty {
+      Task { @MainActor [weak self] in
+        await self?.drainPromptQueueIfPossible(sessionID: session.id)
+      }
+    }
+  }
+
+  private func drainPromptQueueIfPossible(sessionID: UUID) async {
+    guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+      !sessions[index].isRunning,
+      !runningProjectCommandSessionIDs.contains(sessionID),
+      let prompt = sessions[index].queuedPrompts.first
+    else { return }
+
+    sessions[index].queuedPrompts.removeFirst()
+    persist()
+    await sendPrompt(prompt.text, to: sessionID)
   }
 
   private func updateCurrentReasoning(_ reasoning: String, sessionID: UUID) {
@@ -461,7 +545,12 @@ final class AppModel: ObservableObject {
     }
     guard !runningProjectCommandSessionIDs.contains(sessionID) else { return }
     runningProjectCommandSessionIDs.insert(sessionID)
-    defer { runningProjectCommandSessionIDs.remove(sessionID) }
+    defer {
+      runningProjectCommandSessionIDs.remove(sessionID)
+      Task { @MainActor [weak self] in
+        await self?.drainPromptQueueIfPossible(sessionID: sessionID)
+      }
+    }
 
     guard
       let messageID = await recordProjectCommandStarted(
@@ -763,6 +852,56 @@ final class AppModel: ObservableObject {
           }
         }
         return .json(AcceptedBody(sessionID: sessionID, status: "accepted"), status: 202)
+      }
+      if request.method == "GET", parts.count == 4, parts[3] == "prompt-queue" {
+        return .json(session.queuedPrompts)
+      }
+      if request.method == "POST", parts.count == 4, parts[3] == "prompt-queue" {
+        guard
+          let body = try? JSONDecoder().decode(
+            QueuedPromptCreateRequest.self,
+            from: request.body
+          )
+        else {
+          return .json(APIErrorBody(error: "A text field is required"), status: 400)
+        }
+        do {
+          return .json(try enqueuePrompt(body.text, sessionID: sessionID), status: 201)
+        } catch {
+          return .json(APIErrorBody(error: error.localizedDescription), status: 400)
+        }
+      }
+      if parts.count == 5, parts[3] == "prompt-queue",
+        let promptID = UUID(uuidString: parts[4])
+      {
+        if request.method == "PATCH" {
+          guard
+            let body = try? JSONDecoder().decode(
+              QueuedPromptUpdateRequest.self,
+              from: request.body
+            )
+          else {
+            return .json(APIErrorBody(error: "A text field is required"), status: 400)
+          }
+          do {
+            return .json(
+              try updateQueuedPrompt(promptID, sessionID: sessionID, text: body.text)
+            )
+          } catch RemoteAgentError.queuedPromptNotFound {
+            return .json(APIErrorBody(error: "Queued prompt not found"), status: 404)
+          } catch {
+            return .json(APIErrorBody(error: error.localizedDescription), status: 400)
+          }
+        }
+        if request.method == "DELETE" {
+          do {
+            return .json(try removeQueuedPrompt(promptID, sessionID: sessionID))
+          } catch RemoteAgentError.queuedPromptNotFound {
+            return .json(APIErrorBody(error: "Queued prompt not found"), status: 404)
+          } catch {
+            return .json(APIErrorBody(error: error.localizedDescription), status: 400)
+          }
+        }
       }
       if request.method == "PATCH", parts.count == 3 {
         guard let body = try? JSONDecoder().decode(SessionUpdateRequest.self, from: request.body),

@@ -47,6 +47,40 @@ final class ConversationScrollIntegrationTests: XCTestCase {
     )
   }
 
+  func testConnectionScreenClearlyShowsConnectedMac() {
+    let app = launch(fixture: "connection-connected")
+
+    XCTAssertTrue(app.staticTexts["Connected to Mac"].waitForExistence(timeout: 5))
+    XCTAssertTrue(app.staticTexts["Ready to use Remote Agent on this Mac."].exists)
+    XCTAssertTrue(app.descendants(matching: .any)["connection-status-endpoint"].exists)
+    XCTAssertTrue(app.descendants(matching: .any)["connection-status-version"].exists)
+  }
+
+  func testConnectionScreenClearlyShowsFailureAndRecoveryAction() {
+    let app = launch(fixture: "connection-failed")
+
+    XCTAssertTrue(app.staticTexts["Connection Unavailable"].waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      app.staticTexts[
+        "The saved Mac did not respond. Make sure it is awake and on the same Wi-Fi."
+      ].exists
+    )
+    XCTAssertTrue(app.descendants(matching: .any)["connection-status-endpoint"].exists)
+    XCTAssertTrue(app.buttons["Try Again"].exists)
+  }
+
+  func testQueuedPromptOpensEditablePromptSheet() {
+    let app = launch(fixture: "prompt-queue")
+    let edit = app.buttons["Edit queued prompt"].firstMatch
+    XCTAssertTrue(edit.waitForExistence(timeout: 5))
+
+    edit.tap()
+
+    XCTAssertTrue(app.navigationBars["Edit Queued Prompt"].waitForExistence(timeout: 2))
+    XCTAssertTrue(app.textViews["Queued prompt text"].exists)
+    XCTAssertTrue(app.buttons["Save"].exists)
+  }
+
   private func launch(fixture: String) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment["REMOTE_AGENT_FIXTURE"] = fixture

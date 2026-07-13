@@ -6,6 +6,7 @@
 
 ### Mac Host
 
+- Added persisted host-owned prompt queues with authenticated create, list, edit, and delete APIs, automatic FIFO execution after agent turns and project commands, and queue recovery after host launch.
 - Improved on-device commit subjects by prioritizing behavioral context over filenames and using the General Foundation Model with structured greedy output and an imperative outcome prompt.
 - Kept the selected Make target name visible beside the hammer in both the Mac and mobile split buttons.
 - Added authenticated mobile API routes for Make target discovery and selection, remote Make and combined Git Commit & Push execution, and session-scoped command-result retrieval.
@@ -25,6 +26,8 @@
 
 ### iOS
 
+- Moved queued prompts from device storage into Mac session snapshots, added native editing and host-backed removal, and added migration of queues saved by older iOS builds on connection.
+- Made the connection sheet lead with a clear live-status summary showing the Mac endpoint, API version or failure detail, and an inline retry action for unavailable saved connections.
 - Added conditional background app refresh for active sessions: iOS requests the earliest system-managed refresh opportunity, persists watched session IDs across process termination, waits for the Mac health check before reading session status, schedules the existing completion notification before yielding, and stops requesting background work when all agents are idle.
 - Added host-backed Make target and combined Git Commit & Push controls to conversations, with live command chat rows and a dismissible full-output screen.
 - Shortened the session deletion confirmation button to “Delete,” keeping long session titles in the dialog message instead of the action label.

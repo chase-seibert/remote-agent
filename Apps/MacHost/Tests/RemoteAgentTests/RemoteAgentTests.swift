@@ -21,6 +21,36 @@ private actor CapturingCommitMessageGenerator: CommitMessageGenerating {
   }
 }
 
+private actor ControllableCodexSender: CodexSending {
+  private(set) var prompts: [String] = []
+  private var firstPromptContinuation: CheckedContinuation<Void, Never>?
+
+  func send(
+    prompt: String,
+    projectPath _: String,
+    existingSessionID _: String?,
+    configuredExecutable _: String,
+    onEvent _: CodexEventHandler?
+  ) async throws -> CodexTurnResult {
+    prompts.append(prompt)
+    let promptNumber = prompts.count
+    if promptNumber == 1 {
+      await withCheckedContinuation { continuation in
+        firstPromptContinuation = continuation
+      }
+    }
+    return CodexTurnResult(
+      sessionID: "host-owned-queue",
+      response: "Completed prompt \(promptNumber)"
+    )
+  }
+
+  func releaseFirstPrompt() {
+    firstPromptContinuation?.resume()
+    firstPromptContinuation = nil
+  }
+}
+
 struct RemoteAgentTests {
   @Test func parsesCodexJSONLEvents() {
     var parser = CodexEventAccumulator()
@@ -144,6 +174,7 @@ struct RemoteAgentTests {
     var session = AgentSession(project: project)
     session.messages.append(AgentMessage(role: .user, text: "Hello"))
     session.isPinned = true
+    session.queuedPrompts = [QueuedPrompt(text: "Follow up")]
 
     try await store.save([session])
     let loaded = try await store.load()
@@ -151,6 +182,7 @@ struct RemoteAgentTests {
     #expect(loaded.count == 1)
     #expect(loaded.first?.messages.first?.text == "Hello")
     #expect(loaded.first?.isPinned == true)
+    #expect(loaded.first?.queuedPrompts.map(\.text) == ["Follow up"])
   }
 
   @Test func sessionStoreDoesNotPersistCurrentReasoning() async throws {
@@ -759,6 +791,112 @@ struct RemoteAgentTests {
     #expect(deleteResponse.status == 200)
     #expect(try decodeAPI(AgentSession.self, from: deleteResponse).id == older.id)
     #expect(!model.sessions.contains(where: { $0.id == older.id }))
+  }
+
+  @MainActor
+  @Test func hostOwnsEditsAndExecutesQueuedPromptsWithoutIOS() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let projectDirectory = directory.appendingPathComponent("Example", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+      at: projectDirectory,
+      withIntermediateDirectories: true
+    )
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let settings = AppSettings(defaults: defaults)
+    settings.projectsRoot = directory.path
+    settings.apiToken = "test-token"
+    let store = SessionStore(fileURL: directory.appendingPathComponent("sessions.json"))
+    let codex = ControllableCodexSender()
+    let model = AppModel(
+      settings: settings,
+      store: store,
+      activityStore: APIActivityStore(fileURL: directory.appendingPathComponent("activity.json")),
+      codex: codex
+    )
+    await model.refreshProjects()
+    let project = try #require(model.projects.first)
+    let session = try #require(model.createSession(projectID: project.id, select: false))
+
+    let firstTurn = Task { await model.sendPrompt("Initial work", to: session.id) }
+    for _ in 0..<100 {
+      if await codex.prompts == ["Initial work"] { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    let initialPrompts = await codex.prompts
+    #expect(initialPrompts == ["Initial work"])
+
+    let queuePath = RemoteAgentEndpoint.sessionPromptQueue(session.id)
+    let firstQueueResponse = await model.handleAPI(
+      try apiRequest(
+        method: "POST",
+        path: queuePath,
+        token: settings.apiToken,
+        jsonBody: ["text": "Original follow up"]
+      ))
+    #expect(firstQueueResponse.status == 201)
+    let firstQueued = try decodeAPI(QueuedPrompt.self, from: firstQueueResponse)
+
+    let secondQueueResponse = await model.handleAPI(
+      try apiRequest(
+        method: "POST",
+        path: queuePath,
+        token: settings.apiToken,
+        jsonBody: ["text": "Remove this follow up"]
+      ))
+    let secondQueued = try decodeAPI(QueuedPrompt.self, from: secondQueueResponse)
+
+    let editResponse = await model.handleAPI(
+      try apiRequest(
+        method: "PATCH",
+        path: RemoteAgentEndpoint.sessionQueuedPrompt(session.id, promptID: firstQueued.id),
+        token: settings.apiToken,
+        jsonBody: ["text": "Edited follow up"]
+      ))
+    #expect(editResponse.status == 200)
+    #expect(try decodeAPI(QueuedPrompt.self, from: editResponse).text == "Edited follow up")
+
+    let deleteResponse = await model.handleAPI(
+      try apiRequest(
+        method: "DELETE",
+        path: RemoteAgentEndpoint.sessionQueuedPrompt(session.id, promptID: secondQueued.id),
+        token: settings.apiToken
+      ))
+    #expect(deleteResponse.status == 200)
+
+    let sessionResponse = await model.handleAPI(
+      try apiRequest(
+        method: "GET",
+        path: RemoteAgentEndpoint.session(session.id),
+        token: settings.apiToken
+      ))
+    #expect(
+      try decodeAPI(AgentSession.self, from: sessionResponse).queuedPrompts.map(\.text)
+        == ["Edited follow up"]
+    )
+
+    await codex.releaseFirstPrompt()
+    await firstTurn.value
+
+    let executedPrompts = await codex.prompts
+    #expect(executedPrompts == ["Initial work", "Edited follow up"])
+    let completed = try #require(model.sessions.first(where: { $0.id == session.id }))
+    #expect(completed.queuedPrompts.isEmpty)
+    #expect(
+      completed.messages.filter { $0.role == .user }.map(\.text) == [
+        "Initial work", "Edited follow up",
+      ])
+
+    var persisted: [AgentSession] = []
+    for _ in 0..<100 {
+      persisted = try await store.load()
+      if persisted.first?.queuedPrompts.isEmpty == true { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(persisted.first?.queuedPrompts.isEmpty == true)
   }
 
   @MainActor

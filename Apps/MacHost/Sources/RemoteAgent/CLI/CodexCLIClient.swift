@@ -1,7 +1,19 @@
 import Foundation
 
-final class CodexCLIClient: @unchecked Sendable {
-  typealias EventHandler = @Sendable (CodexJSONLEvent) -> Void
+typealias CodexEventHandler = @Sendable (CodexJSONLEvent) -> Void
+
+protocol CodexSending: Sendable {
+  func send(
+    prompt: String,
+    projectPath: String,
+    existingSessionID: String?,
+    configuredExecutable: String,
+    onEvent: CodexEventHandler?
+  ) async throws -> CodexTurnResult
+}
+
+final class CodexCLIClient: CodexSending, @unchecked Sendable {
+  typealias EventHandler = CodexEventHandler
 
   func send(
     prompt: String,

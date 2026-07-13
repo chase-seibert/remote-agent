@@ -234,6 +234,102 @@ final class RemoteAPIClientTests: XCTestCase {
     XCTAssertEqual(result.id, sessionID)
   }
 
+  func testCreatesQueuedPromptOnHost() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+    let promptID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(request.url?.path, RemoteAgentEndpoint.sessionPromptQueue(sessionID))
+      XCTAssertEqual(request.httpMethod, "POST")
+      let body = try JSONDecoder().decode(
+        QueuedPromptCreateRequest.self,
+        from: requestBodyData(request)
+      )
+      XCTAssertEqual(body, QueuedPromptCreateRequest(text: "Follow up"))
+      let json =
+        #"{"id":"\#(promptID.uuidString)","text":"Follow up","createdAt":"2026-07-12T20:00:00Z"}"#
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let queued = try await client.enqueuePrompt("Follow up", sessionID: sessionID)
+    XCTAssertEqual(queued.id, promptID)
+    XCTAssertEqual(queued.text, "Follow up")
+  }
+
+  func testUpdatesQueuedPromptOnHost() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+    let promptID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(
+        request.url?.path,
+        RemoteAgentEndpoint.sessionQueuedPrompt(sessionID, promptID: promptID)
+      )
+      XCTAssertEqual(request.httpMethod, "PATCH")
+      let body = try JSONDecoder().decode(
+        QueuedPromptUpdateRequest.self,
+        from: requestBodyData(request)
+      )
+      XCTAssertEqual(body, QueuedPromptUpdateRequest(text: "Edited follow up"))
+      let json =
+        #"{"id":"\#(promptID.uuidString)","text":"Edited follow up","createdAt":"2026-07-12T20:00:00Z"}"#
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let updated = try await client.updateQueuedPrompt(
+      promptID,
+      text: "Edited follow up",
+      sessionID: sessionID
+    )
+    XCTAssertEqual(updated.text, "Edited follow up")
+  }
+
+  func testDeletesQueuedPromptOnHost() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+    let promptID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(
+        request.url?.path,
+        RemoteAgentEndpoint.sessionQueuedPrompt(sessionID, promptID: promptID)
+      )
+      XCTAssertEqual(request.httpMethod, "DELETE")
+      let json =
+        #"{"id":"\#(promptID.uuidString)","text":"Remove me","createdAt":"2026-07-12T20:00:00Z"}"#
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let removed = try await client.deleteQueuedPrompt(promptID, sessionID: sessionID)
+    XCTAssertEqual(removed.id, promptID)
+  }
+
   func testSurfacesServerErrorDetail() async {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [MockURLProtocol.self]

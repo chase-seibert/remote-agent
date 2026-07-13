@@ -14,7 +14,7 @@ SIM_FIXTURE ?= recent-sessions
 DEVICE_ID ?= 00008150-000E41422E40401C
 DEVELOPMENT_TEAM ?= 96NAC4VTEN
 
-.PHONY: setup format lint test integration-test build run clean sim-build sim-launch sim-debug-fixture sim-recent-sessions-fixture sim-recent-session-detail-fixture sim-rename-session-fixture sim-prompt-queue-fixture sim-long-conversation-fixture sim-long-conversation-from-list-fixture sim-long-conversation-from-session-fixture sim-code-preview-fixture sim-document-browser-fixture phone-build phone-install phone-launch phone-deploy
+.PHONY: setup format lint test integration-test build run clean sim-build sim-launch sim-debug-fixture sim-recent-sessions-fixture sim-recent-session-detail-fixture sim-rename-session-fixture sim-prompt-queue-fixture sim-long-conversation-fixture sim-long-conversation-from-list-fixture sim-long-conversation-from-session-fixture sim-code-preview-fixture sim-document-browser-fixture sim-connection-connected-fixture sim-connection-failed-fixture phone-build phone-install phone-launch phone-deploy
 
 setup:
 	xcodebuild -resolvePackageDependencies -project $(PROJECT) -scheme $(SCHEME)
@@ -115,6 +115,12 @@ sim-code-preview-fixture:
 
 sim-document-browser-fixture:
 	$(MAKE) sim-debug-fixture SIM_FIXTURE=document-browser
+
+sim-connection-connected-fixture:
+	$(MAKE) sim-debug-fixture SIM_FIXTURE=connection-connected
+
+sim-connection-failed-fixture:
+	$(MAKE) sim-debug-fixture SIM_FIXTURE=connection-failed
 
 phone-build:
 	xcodebuild \

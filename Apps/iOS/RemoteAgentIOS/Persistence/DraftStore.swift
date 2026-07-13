@@ -1,4 +1,5 @@
 import Foundation
+import RemoteAgentProtocol
 
 struct DraftStore {
   private let defaults: UserDefaults

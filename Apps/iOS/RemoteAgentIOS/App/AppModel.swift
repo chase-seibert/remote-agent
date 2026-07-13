@@ -51,10 +51,23 @@ import UIKit
       name == "document-browser"
     }
 
+    static var connectionStatus: ConnectionStatus? {
+      switch name {
+      case "connection-connected": .connected
+      case "connection-failed": .failed
+      default: nil
+      }
+    }
+
     enum LongConversationEntry {
       case direct
       case sessionList
       case anotherSession
+    }
+
+    enum ConnectionStatus {
+      case connected
+      case failed
     }
   }
 #endif
@@ -78,8 +91,6 @@ final class AppModel: ObservableObject {
   @Published private(set) var connectionState: ConnectionState = .loading
   @Published private(set) var projects: [AgentProject] = []
   @Published private(set) var sessions: [AgentSession] = []
-  @Published private(set) var queuedPromptsBySession: [UUID: [QueuedPrompt]] = [:]
-  @Published private(set) var deliveringQueuedPromptIDs: Set<UUID> = []
   @Published private(set) var projectCommandConfigurations:
     [UUID: ProjectCommandConfigurationResponse] = [:]
   @Published private(set) var runningProjectCommandSessionIDs: Set<UUID> = []
@@ -124,6 +135,9 @@ final class AppModel: ObservableObject {
       } else if DebugAppFixture.longConversationEnabled {
         didStart = true
         installLongConversationFixture(entry: DebugAppFixture.longConversationEntry ?? .direct)
+      } else if let status = DebugAppFixture.connectionStatus {
+        didStart = true
+        installConnectionStatusFixture(status)
       }
     #endif
   }
@@ -150,7 +164,6 @@ final class AppModel: ObservableObject {
       connectionState = .connected(version: "test")
       protocolVersion = "test"
       didStart = true
-      loadQueuedPromptsForSessions()
       syncUnreadSessionBadge()
     }
   #endif
@@ -273,16 +286,17 @@ final class AppModel: ObservableObject {
           ),
         ],
         isRunning: true,
-        currentReasoning: "Verifying FIFO delivery before updating the tests."
+        currentReasoning: "Verifying FIFO delivery before updating the tests.",
+        queuedPrompts: [
+          QueuedPrompt(
+            text: "Add tests for FIFO delivery.", createdAt: now.addingTimeInterval(-30)),
+          QueuedPrompt(
+            text: "Then update the documentation.", createdAt: now.addingTimeInterval(-15)),
+        ]
       )
       configuration = APIConfiguration(host: "fixture.local", port: 8765, token: "fixture")
       applySnapshot(projects: [project], sessions: [session])
       selectSession(session.id)
-      queuedPromptsBySession[session.id] = [
-        QueuedPrompt(text: "Add tests for FIFO delivery.", createdAt: now.addingTimeInterval(-30)),
-        QueuedPrompt(
-          text: "Then update the documentation.", createdAt: now.addingTimeInterval(-15)),
-      ]
       connectionState = .connected(version: "fixture")
     }
 
@@ -361,6 +375,22 @@ final class AppModel: ObservableObject {
       }
       connectionState = .connected(version: "fixture")
     }
+
+    private func installConnectionStatusFixture(_ status: DebugAppFixture.ConnectionStatus) {
+      configuration = APIConfiguration(
+        host: "chases-mac.local",
+        port: 8765,
+        token: "fixture"
+      )
+      switch status {
+      case .connected:
+        connectionState = .connected(version: "1")
+      case .failed:
+        connectionState = .failed(
+          message: "The saved Mac did not respond. Make sure it is awake and on the same Wi-Fi."
+        )
+      }
+    }
   #endif
 
   func connect(host: String, port: Int, token rawToken: String) async {
@@ -397,14 +427,12 @@ final class AppModel: ObservableObject {
       configuration = proposed
       client = proposedClient
       protocolVersion = health.version
-      queuedPromptsBySession = [:]
       projectCommandConfigurations = [:]
       runningProjectCommandSessionIDs = []
       let completionTasks = applySnapshot(projects: snapshot.0, sessions: snapshot.1)
-      loadQueuedPromptsForSessions()
       connectionState = .connected(version: health.version)
+      await migrateLegacyQueuedPrompts(using: proposedClient)
       startPollingForRunningSessions()
-      deliverQueuedPromptsForIdleSessions()
       await waitForCompletionNotifications(completionTasks)
     } catch {
       client = nil
@@ -437,8 +465,6 @@ final class AppModel: ObservableObject {
       configuration = nil
       projects = []
       sessions = []
-      queuedPromptsBySession = [:]
-      deliveringQueuedPromptIDs = []
       selectedSessionID = nil
       syncUnreadSessionBadge()
       disconnect()
@@ -457,10 +483,9 @@ final class AppModel: ObservableObject {
       async let loadedSessions = client.sessions(projectID: nil)
       let snapshot = try await (loadedProjects, loadedSessions)
       let completionTasks = applySnapshot(projects: snapshot.0, sessions: snapshot.1)
-      loadQueuedPromptsForSessions()
       connectionState = .connected(version: protocolVersion)
+      await migrateLegacyQueuedPrompts(using: client)
       startPollingForRunningSessions()
-      deliverQueuedPromptsForIdleSessions()
       await waitForCompletionNotifications(completionTasks)
     } catch {
       connectionState = .failed(message: error.localizedDescription)
@@ -470,12 +495,9 @@ final class AppModel: ObservableObject {
   func selectSession(_ id: UUID?) {
     selectedSessionID = id
     guard let id else { return }
-    loadQueuedPromptsIfNeeded(sessionID: id)
-    guard sessions.first(where: { $0.id == id })?.hasActiveWork == true else {
-      Task { await deliverNextQueuedPromptIfPossible(sessionID: id) }
-      return
+    if sessions.first(where: { $0.id == id })?.hasActiveWork == true {
+      startPolling(sessionID: id)
     }
-    startPolling(sessionID: id)
   }
 
   func markSessionRead(_ id: UUID) async {
@@ -546,9 +568,6 @@ final class AppModel: ObservableObject {
       _ = try await client.deleteSession(id: id)
       pollHandles[id]?.task.cancel()
       pollHandles[id] = nil
-      let queuedPromptIDs = Set((queuedPromptsBySession[id] ?? []).map(\.id))
-      deliveringQueuedPromptIDs.subtract(queuedPromptIDs)
-      queuedPromptsBySession[id] = nil
       sendingSessionIDs.remove(id)
       runningProjectCommandSessionIDs.remove(id)
       projectCommandConfigurations[id] = nil
@@ -576,7 +595,6 @@ final class AppModel: ObservableObject {
     do {
       let session = try await client.createSession(projectID: projectID)
       replaceSession(session)
-      loadQueuedPromptsIfNeeded(sessionID: session.id)
       selectedSessionID = session.id
       connectionState = .connected(version: protocolVersion)
     } catch {
@@ -733,45 +751,76 @@ final class AppModel: ObservableObject {
     guard !text.isEmpty, configuration != nil,
       let session = sessions.first(where: { $0.id == sessionID })
     else { return false }
+    guard connectionState.isConnected, client != nil else {
+      presentedError = RemoteAPIError.notConnected.localizedDescription
+      return false
+    }
 
-    loadQueuedPromptsIfNeeded(sessionID: sessionID)
     let shouldQueue =
       session.hasActiveWork
       || runningProjectCommandSessionIDs.contains(sessionID)
       || sendingSessionIDs.contains(sessionID)
-      || !connectionState.isConnected
-      || client == nil
-      || !(queuedPromptsBySession[sessionID] ?? []).isEmpty
+      || !session.queuedPrompts.isEmpty
 
     if shouldQueue {
-      enqueuePrompt(text, sessionID: sessionID)
-      saveDraft("", sessionID: sessionID)
-      if !session.hasActiveWork, !runningProjectCommandSessionIDs.contains(sessionID),
-        connectionState.isConnected
-      {
-        Task { await deliverNextQueuedPromptIfPossible(sessionID: sessionID) }
-      }
-      return true
+      return await enqueuePromptOnHost(text, sessionID: sessionID, clearDraftOnSuccess: true)
     }
 
     return await sendPromptImmediately(text, to: sessionID, clearDraftOnSuccess: true)
   }
 
   func queuedPrompts(sessionID: UUID) -> [QueuedPrompt] {
-    queuedPromptsBySession[sessionID] ?? []
+    sessions.first(where: { $0.id == sessionID })?.queuedPrompts ?? []
   }
 
   func canAcceptPrompt(sessionID: UUID) -> Bool {
-    configuration != nil && sessions.contains(where: { $0.id == sessionID })
+    configuration != nil && connectionState.isConnected && client != nil
+      && sessions.contains(where: { $0.id == sessionID })
   }
 
-  func removeQueuedPrompt(_ promptID: UUID, sessionID: UUID) {
-    guard !deliveringQueuedPromptIDs.contains(promptID) else { return }
-    loadQueuedPromptsIfNeeded(sessionID: sessionID)
-    guard var prompts = queuedPromptsBySession[sessionID] else { return }
-    prompts.removeAll { $0.id == promptID }
-    queuedPromptsBySession[sessionID] = prompts
-    persistQueuedPrompts(sessionID: sessionID)
+  func updateQueuedPrompt(_ promptID: UUID, text rawText: String, sessionID: UUID) async -> Bool {
+    let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else {
+      presentedError = "Queued prompt text cannot be empty."
+      return false
+    }
+    guard let client else {
+      presentedError = RemoteAPIError.notConnected.localizedDescription
+      return false
+    }
+    do {
+      let updated = try await client.updateQueuedPrompt(promptID, text: text, sessionID: sessionID)
+      guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionID }),
+        let promptIndex = sessions[sessionIndex].queuedPrompts.firstIndex(where: {
+          $0.id == promptID
+        })
+      else { return false }
+      sessions[sessionIndex].queuedPrompts[promptIndex] = updated
+      connectionState = .connected(version: protocolVersion)
+      return true
+    } catch {
+      await handleQueueMutationFailure(error, sessionID: sessionID)
+      return false
+    }
+  }
+
+  func removeQueuedPrompt(_ promptID: UUID, sessionID: UUID) async -> Bool {
+    guard let client else {
+      presentedError = RemoteAPIError.notConnected.localizedDescription
+      return false
+    }
+    do {
+      _ = try await client.deleteQueuedPrompt(promptID, sessionID: sessionID)
+      guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionID }) else {
+        return false
+      }
+      sessions[sessionIndex].queuedPrompts.removeAll { $0.id == promptID }
+      connectionState = .connected(version: protocolVersion)
+      return true
+    } catch {
+      await handleQueueMutationFailure(error, sessionID: sessionID)
+      return false
+    }
   }
 
   private func sendPromptImmediately(
@@ -809,6 +858,13 @@ final class AppModel: ObservableObject {
       )
       return true
     } catch {
+      if case RemoteAPIError.http(status: 409, detail: _) = error {
+        return await enqueuePromptOnHost(
+          text,
+          sessionID: sessionID,
+          clearDraftOnSuccess: clearDraftOnSuccess
+        )
+      }
       presentedError = error.localizedDescription
       if case RemoteAPIError.unreachable = error {
         connectionState = .failed(message: error.localizedDescription)
@@ -827,70 +883,70 @@ final class AppModel: ObservableObject {
     draftStore.save(value, serverIdentifier: serverIdentifier, sessionID: sessionID)
   }
 
-  private func enqueuePrompt(_ text: String, sessionID: UUID) {
-    var prompts = queuedPromptsBySession[sessionID] ?? []
-    prompts.append(QueuedPrompt(text: text))
-    queuedPromptsBySession[sessionID] = prompts
-    persistQueuedPrompts(sessionID: sessionID)
-  }
-
-  private func loadQueuedPromptsForSessions() {
-    for session in sessions {
-      loadQueuedPromptsIfNeeded(sessionID: session.id)
+  private func enqueuePromptOnHost(
+    _ text: String,
+    sessionID: UUID,
+    clearDraftOnSuccess: Bool
+  ) async -> Bool {
+    guard let client else { return false }
+    do {
+      let queued = try await client.enqueuePrompt(text, sessionID: sessionID)
+      if let index = sessions.firstIndex(where: { $0.id == sessionID }),
+        !sessions[index].queuedPrompts.contains(where: { $0.id == queued.id })
+      {
+        sessions[index].queuedPrompts.append(queued)
+      }
+      if clearDraftOnSuccess { saveDraft("", sessionID: sessionID) }
+      Task { await completionNotifications.requestAuthorizationIfNeeded() }
+      startPolling(sessionID: sessionID)
+      connectionState = .connected(version: protocolVersion)
+      return true
+    } catch {
+      presentedError = error.localizedDescription
+      if case RemoteAPIError.unreachable = error {
+        connectionState = .failed(message: error.localizedDescription)
+      }
+      return false
     }
   }
 
-  private func loadQueuedPromptsIfNeeded(sessionID: UUID) {
-    guard queuedPromptsBySession[sessionID] == nil,
-      let serverIdentifier = configuration?.serverIdentifier
-    else { return }
-    queuedPromptsBySession[sessionID] = draftStore.queuedPrompts(
-      serverIdentifier: serverIdentifier,
-      sessionID: sessionID
-    )
+  private func handleQueueMutationFailure(_ error: Error, sessionID: UUID) async {
+    presentedError = error.localizedDescription
+    if case RemoteAPIError.unreachable = error {
+      connectionState = .failed(message: error.localizedDescription)
+      return
+    }
+    guard let client, let updated = try? await client.session(id: sessionID) else { return }
+    replaceSession(updated)
   }
 
-  private func persistQueuedPrompts(sessionID: UUID) {
+  private func migrateLegacyQueuedPrompts(using client: any RemoteAPIClientProtocol) async {
     guard let serverIdentifier = configuration?.serverIdentifier else { return }
-    draftStore.saveQueuedPrompts(
-      queuedPromptsBySession[sessionID] ?? [],
-      serverIdentifier: serverIdentifier,
-      sessionID: sessionID
-    )
-  }
-
-  private func deliverQueuedPromptsForIdleSessions() {
-    for session in sessions
-    where !session.hasActiveWork && !runningProjectCommandSessionIDs.contains(session.id)
-      && !queuedPrompts(sessionID: session.id).isEmpty
-    {
-      Task { await deliverNextQueuedPromptIfPossible(sessionID: session.id) }
+    for session in sessions {
+      var legacy = draftStore.queuedPrompts(
+        serverIdentifier: serverIdentifier,
+        sessionID: session.id
+      )
+      while let prompt = legacy.first {
+        do {
+          let queued = try await client.enqueuePrompt(prompt.text, sessionID: session.id)
+          if let index = sessions.firstIndex(where: { $0.id == session.id }),
+            !sessions[index].queuedPrompts.contains(where: { $0.id == queued.id })
+          {
+            sessions[index].queuedPrompts.append(queued)
+          }
+          legacy.removeFirst()
+          draftStore.saveQueuedPrompts(
+            legacy,
+            serverIdentifier: serverIdentifier,
+            sessionID: session.id
+          )
+          startPolling(sessionID: session.id)
+        } catch {
+          break
+        }
+      }
     }
-  }
-
-  private func deliverNextQueuedPromptIfPossible(sessionID: UUID) async {
-    loadQueuedPromptsIfNeeded(sessionID: sessionID)
-    guard connectionState.isConnected,
-      sessions.first(where: { $0.id == sessionID })?.hasActiveWork == false,
-      !runningProjectCommandSessionIDs.contains(sessionID),
-      !sendingSessionIDs.contains(sessionID),
-      let prompt = queuedPromptsBySession[sessionID]?.first,
-      !deliveringQueuedPromptIDs.contains(prompt.id)
-    else { return }
-
-    deliveringQueuedPromptIDs.insert(prompt.id)
-    let accepted = await sendPromptImmediately(
-      prompt.text,
-      to: sessionID,
-      clearDraftOnSuccess: false
-    )
-    deliveringQueuedPromptIDs.remove(prompt.id)
-
-    guard accepted else { return }
-    var prompts = queuedPromptsBySession[sessionID] ?? []
-    prompts.removeAll { $0.id == prompt.id }
-    queuedPromptsBySession[sessionID] = prompts
-    persistQueuedPrompts(sessionID: sessionID)
   }
 
   func sceneActivityChanged(isActive: Bool) {
@@ -992,7 +1048,6 @@ final class AppModel: ObservableObject {
       )
     } else {
       sessions.append(updated)
-      loadQueuedPromptsIfNeeded(sessionID: updated.id)
       notifyIfCompleted(
         previous: nil,
         updated: updated,
@@ -1107,10 +1162,6 @@ final class AppModel: ObservableObject {
   ) -> Task<Void, Never>? {
     let wasActive = previous?.hasActiveWork ?? watchedSessionIDs.contains(updated.id)
     guard wasActive, !updated.hasActiveWork else { return nil }
-    Task { [weak self] in
-      await Task.yield()
-      await self?.deliverNextQueuedPromptIfPossible(sessionID: updated.id)
-    }
     pendingCompletionNotifications += 1
     return Task {
       await completionNotifications.notifyCompletion(for: updated)

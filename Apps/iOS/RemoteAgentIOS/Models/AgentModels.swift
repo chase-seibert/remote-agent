@@ -1,4 +1,5 @@
 import Foundation
+import RemoteAgentProtocol
 
 struct AgentProject: Identifiable, Codable, Hashable, Sendable {
   let id: String
@@ -57,6 +58,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   var isUnread: Bool
   var isPinned: Bool
   var selectedMakeTarget: String?
+  var queuedPrompts: [QueuedPrompt]
 
   init(
     id: UUID,
@@ -71,7 +73,8 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     currentReasoning: String? = nil,
     isUnread: Bool = false,
     isPinned: Bool = false,
-    selectedMakeTarget: String? = nil
+    selectedMakeTarget: String? = nil,
+    queuedPrompts: [QueuedPrompt] = []
   ) {
     self.id = id
     self.projectID = projectID
@@ -86,6 +89,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     self.isUnread = isUnread
     self.isPinned = isPinned
     self.selectedMakeTarget = selectedMakeTarget
+    self.queuedPrompts = queuedPrompts
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -102,6 +106,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case isUnread
     case isPinned
     case selectedMakeTarget
+    case queuedPrompts
   }
 
   init(from decoder: Decoder) throws {
@@ -119,25 +124,14 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     isUnread = try container.decodeIfPresent(Bool.self, forKey: .isUnread) ?? false
     isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
     selectedMakeTarget = try container.decodeIfPresent(String.self, forKey: .selectedMakeTarget)
+    queuedPrompts = try container.decodeIfPresent([QueuedPrompt].self, forKey: .queuedPrompts) ?? []
   }
 
   var hasPendingProjectCommand: Bool {
     messages.contains { $0.projectCommandResultID != nil && $0.state == .pending }
   }
 
-  var hasActiveWork: Bool { isRunning || hasPendingProjectCommand }
-}
-
-struct QueuedPrompt: Identifiable, Codable, Hashable, Sendable {
-  let id: UUID
-  let text: String
-  let createdAt: Date
-
-  init(id: UUID = UUID(), text: String, createdAt: Date = Date()) {
-    self.id = id
-    self.text = text
-    self.createdAt = createdAt
-  }
+  var hasActiveWork: Bool { isRunning || hasPendingProjectCommand || !queuedPrompts.isEmpty }
 }
 
 struct HealthResponse: Codable, Equatable, Sendable {

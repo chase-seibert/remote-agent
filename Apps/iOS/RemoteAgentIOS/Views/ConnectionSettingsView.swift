@@ -13,6 +13,14 @@ struct ConnectionSettingsView: View {
   var body: some View {
     NavigationStack {
       Form {
+        ConnectionStatusSection(
+          state: model.connectionState,
+          configuration: model.configuration,
+          retry: {
+            Task { await model.retryConnection() }
+          }
+        )
+
         Section {
           TextField("Mac hostname or IP", text: $host)
             .textInputAutocapitalization(.never)
@@ -54,7 +62,6 @@ struct ConnectionSettingsView: View {
           Section {
             Button("Disconnect") {
               model.disconnect()
-              dismiss()
             }
             Button("Remove Saved Connection", role: .destructive) {
               model.removeConfiguration()
@@ -69,11 +76,11 @@ struct ConnectionSettingsView: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
+          Button(model.hasSavedConfiguration ? "Done" : "Cancel") { dismiss() }
             .disabled(!model.hasSavedConfiguration)
         }
         ToolbarItem(placement: .confirmationAction) {
-          Button(model.connectionState == .connecting ? "Connecting…" : "Connect") {
+          Button(connectButtonTitle) {
             guard let parsedPort = Int(port) else {
               model.presentedError = ConfigurationError.invalidPort.localizedDescription
               return
@@ -100,5 +107,141 @@ struct ConnectionSettingsView: View {
         }
       }
     }
+  }
+
+  private var connectButtonTitle: String {
+    switch model.connectionState {
+    case .connecting:
+      "Connecting…"
+    case .connected:
+      "Reconnect"
+    default:
+      "Connect"
+    }
+  }
+}
+
+private struct ConnectionStatusSection: View {
+  let state: ConnectionState
+  let configuration: APIConfiguration?
+  let retry: () -> Void
+
+  var body: some View {
+    Section("Current Status") {
+      HStack(alignment: .top, spacing: 14) {
+        Image(systemName: icon)
+          .font(.title2)
+          .foregroundStyle(color)
+          .frame(width: 44, height: 44)
+          .background(color.opacity(0.12), in: Circle())
+          .symbolEffect(.pulse, isActive: isChecking)
+
+        VStack(alignment: .leading, spacing: 4) {
+          Text(title)
+            .font(.headline)
+            .accessibilityIdentifier("connection-status-title")
+          Text(message)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("connection-status-message")
+        }
+      }
+      .padding(.vertical, 6)
+
+      if let configuration {
+        LabeledContent("Mac", value: "\(configuration.host):\(configuration.port)")
+          .accessibilityIdentifier("connection-status-endpoint")
+      }
+
+      if case .connected(let version) = state {
+        LabeledContent("API", value: "Version \(version)")
+          .accessibilityIdentifier("connection-status-version")
+      }
+
+      if canRetry {
+        Button(action: retry) {
+          Label("Try Again", systemImage: "arrow.clockwise")
+        }
+      }
+    }
+  }
+
+  private var title: String {
+    switch state {
+    case .loading:
+      "Checking Connection"
+    case .notConfigured:
+      "Not Connected"
+    case .disconnected:
+      "Disconnected"
+    case .connecting:
+      "Connecting to Mac"
+    case .connected:
+      "Connected to Mac"
+    case .failed:
+      "Connection Unavailable"
+    }
+  }
+
+  private var message: String {
+    switch state {
+    case .loading:
+      "Loading the saved Mac connection."
+    case .notConfigured:
+      "Enter the connection details from Remote Agent on your Mac."
+    case .disconnected:
+      "This device is not currently connected to the saved Mac."
+    case .connecting:
+      "Checking the Mac and loading its sessions."
+    case .connected:
+      "Ready to use Remote Agent on this Mac."
+    case .failed(let message):
+      message
+    }
+  }
+
+  private var icon: String {
+    switch state {
+    case .connected:
+      "checkmark.circle.fill"
+    case .failed:
+      "exclamationmark.triangle.fill"
+    case .connecting, .loading:
+      "network"
+    case .notConfigured:
+      "link.badge.plus"
+    case .disconnected:
+      "network.slash"
+    }
+  }
+
+  private var color: Color {
+    switch state {
+    case .connected:
+      .green
+    case .failed:
+      .orange
+    case .connecting:
+      .blue
+    default:
+      .secondary
+    }
+  }
+
+  private var isChecking: Bool {
+    state == .loading || state == .connecting
+  }
+
+  private var canRetry: Bool {
+    guard configuration != nil else { return false }
+    return state == .disconnected || state.isFailure
+  }
+}
+
+extension ConnectionState {
+  fileprivate var isFailure: Bool {
+    if case .failed = self { return true }
+    return false
   }
 }

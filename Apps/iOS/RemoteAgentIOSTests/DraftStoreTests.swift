@@ -1,3 +1,4 @@
+import RemoteAgentProtocol
 import XCTest
 
 @testable import RemoteAgentIOS

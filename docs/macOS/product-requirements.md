@@ -6,6 +6,7 @@
 - As a developer, I want each recent session to show its project, activity time, and current status, so that I can identify the right work at a glance.
 - As a developer, I want to start a session in a project, so that Codex reads and changes files in the correct working directory.
 - As a developer, I want to send several prompts in one session, so that Codex retains the conversation and tool context.
+- As an iOS client user, I want queued prompts persisted, editable, and executed by the Mac in FIFO order, so that follow-up work continues after the phone app closes.
 - As a developer, I want my session list and visible transcript to survive an app restart, so that I can return to earlier work.
 - As a developer, I want to run a project's Makefile targets from a split button that remembers the latest target for each session, so that common build, test, and deployment workflows stay close to the active session.
 - As a developer, I want one Commit & Push control that stages every working-tree change, generates its subject on device, commits, and pushes when an upstream exists, so that I can publish completed work without opening Terminal or fail merely because a local branch has no upstream.

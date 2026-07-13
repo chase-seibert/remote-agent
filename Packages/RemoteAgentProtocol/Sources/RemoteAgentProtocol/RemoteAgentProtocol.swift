@@ -22,6 +22,14 @@ public enum RemoteAgentEndpoint {
     "\(session(id))/messages"
   }
 
+  public static func sessionPromptQueue(_ id: UUID) -> String {
+    "\(session(id))/prompt-queue"
+  }
+
+  public static func sessionQueuedPrompt(_ sessionID: UUID, promptID: UUID) -> String {
+    "\(sessionPromptQueue(sessionID))/\(promptID.uuidString)"
+  }
+
   public static func sessionProjectCommands(_ id: UUID) -> String {
     "\(session(id))/project-commands"
   }
@@ -32,6 +40,34 @@ public enum RemoteAgentEndpoint {
 
   public static func document(_ id: String) -> String {
     "\(documents)/\(id)"
+  }
+}
+
+public struct QueuedPrompt: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let text: String
+  public let createdAt: Date
+
+  public init(id: UUID = UUID(), text: String, createdAt: Date = Date()) {
+    self.id = id
+    self.text = text
+    self.createdAt = createdAt
+  }
+}
+
+public struct QueuedPromptCreateRequest: Codable, Equatable, Sendable {
+  public let text: String
+
+  public init(text: String) {
+    self.text = text
+  }
+}
+
+public struct QueuedPromptUpdateRequest: Codable, Equatable, Sendable {
+  public let text: String
+
+  public init(text: String) {
+    self.text = text
   }
 }
 

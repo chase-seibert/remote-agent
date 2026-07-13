@@ -11,7 +11,10 @@ struct RemoteAgentIOSApp: App {
     WindowGroup {
       Group {
         #if DEBUG
-          if DebugAppFixture.documentBrowserEnabled {
+          if DebugAppFixture.connectionStatus != nil {
+            ConnectionSettingsView()
+              .environmentObject(model)
+          } else if DebugAppFixture.documentBrowserEnabled {
             NavigationStack {
               ProjectDocumentBrowserFixtureView()
             }

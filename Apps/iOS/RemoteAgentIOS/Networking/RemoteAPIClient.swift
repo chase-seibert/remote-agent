@@ -15,6 +15,10 @@ protocol RemoteAPIClientProtocol: Sendable {
     -> ProjectDocumentContent
   func createSession(projectID: String) async throws -> AgentSession
   func sendMessage(_ text: String, sessionID: UUID) async throws -> AcceptedResponse
+  func enqueuePrompt(_ text: String, sessionID: UUID) async throws -> QueuedPrompt
+  func updateQueuedPrompt(_ promptID: UUID, text: String, sessionID: UUID) async throws
+    -> QueuedPrompt
+  func deleteQueuedPrompt(_ promptID: UUID, sessionID: UUID) async throws -> QueuedPrompt
   func projectCommandConfiguration(sessionID: UUID) async throws
     -> ProjectCommandConfigurationResponse
   func selectMakeTarget(_ target: String, sessionID: UUID) async throws -> AgentSession
@@ -28,6 +32,20 @@ protocol RemoteAPIClientProtocol: Sendable {
 }
 
 extension RemoteAPIClientProtocol {
+  func enqueuePrompt(_: String, sessionID _: UUID) async throws -> QueuedPrompt {
+    throw RemoteAPIError.notConnected
+  }
+
+  func updateQueuedPrompt(_: UUID, text _: String, sessionID _: UUID) async throws
+    -> QueuedPrompt
+  {
+    throw RemoteAPIError.notConnected
+  }
+
+  func deleteQueuedPrompt(_: UUID, sessionID _: UUID) async throws -> QueuedPrompt {
+    throw RemoteAPIError.notConnected
+  }
+
   func projectCommandConfiguration(sessionID _: UUID) async throws
     -> ProjectCommandConfigurationResponse
   {
@@ -156,6 +174,34 @@ final class RemoteAPIClient: RemoteAPIClientProtocol, @unchecked Sendable {
       method: "POST",
       body: SendMessageRequest(text: text),
       expectedStatus: 202
+    )
+  }
+
+  func enqueuePrompt(_ text: String, sessionID: UUID) async throws -> QueuedPrompt {
+    try await request(
+      path: RemoteAgentEndpoint.sessionPromptQueue(sessionID),
+      method: "POST",
+      body: QueuedPromptCreateRequest(text: text),
+      expectedStatus: 201
+    )
+  }
+
+  func updateQueuedPrompt(_ promptID: UUID, text: String, sessionID: UUID) async throws
+    -> QueuedPrompt
+  {
+    try await request(
+      path: RemoteAgentEndpoint.sessionQueuedPrompt(sessionID, promptID: promptID),
+      method: "PATCH",
+      body: QueuedPromptUpdateRequest(text: text),
+      expectedStatus: 200
+    )
+  }
+
+  func deleteQueuedPrompt(_ promptID: UUID, sessionID: UUID) async throws -> QueuedPrompt {
+    try await request(
+      path: RemoteAgentEndpoint.sessionQueuedPrompt(sessionID, promptID: promptID),
+      method: "DELETE",
+      expectedStatus: 200
     )
   }
 

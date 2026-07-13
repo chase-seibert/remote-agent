@@ -6,7 +6,7 @@
 - As a developer, I want to rename a session, so that its title stays useful as the work changes.
 - As a developer, I want to pin important sessions above recent activity, so that durable work stays easy to reach across projects.
 - As a developer, I want to delete an idle session after confirming the destructive action, so that obsolete transcripts do not clutter the global list.
-- As a developer, I want to queue follow-up prompts while an agent is working, so that my next instructions run automatically in order.
+- As a developer, I want to queue and edit follow-up prompts while an agent is working, with the queue owned by my Mac, so that my next instructions run automatically in order even when the iOS app is not running.
 - As a developer, I want to select and run Make targets plus a combined Git Commit & Push action from a conversation, so that build and publishing workflows execute on my Mac while I am using my phone.
 - As a developer, I want to open a project-command chat row and inspect the Mac's full output on a dismissible screen, so that command details remain available without cluttering the transcript.
 - As a developer, I want active turns to update automatically, so that I know when Codex has finished or failed.

@@ -1,4 +1,5 @@
 import Foundation
+import RemoteAgentProtocol
 
 struct AgentProject: Identifiable, Codable, Hashable, Sendable {
   let id: String
@@ -93,6 +94,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   var isUnread: Bool
   var isPinned: Bool
   var selectedMakeTarget: String?
+  var queuedPrompts: [QueuedPrompt]
 
   init(project: AgentProject) {
     id = UUID()
@@ -108,6 +110,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     isUnread = false
     isPinned = false
     selectedMakeTarget = nil
+    queuedPrompts = []
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -124,6 +127,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case isUnread
     case isPinned
     case selectedMakeTarget
+    case queuedPrompts
   }
 
   init(from decoder: Decoder) throws {
@@ -141,6 +145,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     isUnread = try container.decodeIfPresent(Bool.self, forKey: .isUnread) ?? false
     isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
     selectedMakeTarget = try container.decodeIfPresent(String.self, forKey: .selectedMakeTarget)
+    queuedPrompts = try container.decodeIfPresent([QueuedPrompt].self, forKey: .queuedPrompts) ?? []
   }
 }
 
@@ -295,6 +300,7 @@ enum RemoteAgentError: LocalizedError {
   case invalidCodexOutput
   case projectNotFound
   case sessionNotFound
+  case queuedPromptNotFound
   case sessionBusy
   case invalidRequest(String)
 
@@ -310,6 +316,8 @@ enum RemoteAgentError: LocalizedError {
       return "The selected project no longer exists."
     case .sessionNotFound:
       return "The selected session no longer exists."
+    case .queuedPromptNotFound:
+      return "That queued prompt is no longer waiting to run."
     case .sessionBusy:
       return "That session is already processing a prompt."
     case .invalidRequest(let reason):
