@@ -10,6 +10,10 @@
 
 - Added formatted Markdown tables to document previews with the same header, alignment, border, wrapping, row shading, and horizontal-scrolling behavior.
 
+### Documentation
+
+- Updated the README hero to describe seamless Mac and phone workflows with optional Tailscale access, and added current Mac and iPhone product screenshots.
+
 ## 2026-07-12
 
 - Consolidated the Mac host, iOS client, documentation, and build orchestration into one monorepo with a shared `RemoteAgentProtocol` Swift package.

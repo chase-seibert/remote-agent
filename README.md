@@ -1,6 +1,16 @@
 # Remote Agent
 
-Remote Agent is a local macOS host and companion iOS client for working with Codex sessions away from the Mac. Both apps live in this monorepo so host UI, API, protocol, and mobile changes can ship atomically.
+**Work seamlessly on your Codex projects whether you are at your desktop or on your phone.**
+
+Remote Agent keeps the same projects and Codex sessions within reach through a native Mac host and companion iPhone/iPad app. Pair Remote Agent with Tailscale on your Mac and phone to reach the host over your private tailnet and keep working from anywhere.
+
+<p align="center">
+  <img src="docs/images/remote-agent-mac.png" alt="Remote Agent running a Codex project on macOS" width="720">
+  &nbsp;
+  <img src="docs/images/remote-agent-iphone.jpg" alt="The same Remote Agent Codex session on iPhone" width="250">
+</p>
+
+Both apps live in this monorepo so host UI, API, protocol, and mobile changes can ship atomically.
 
 ## Repository layout
 
