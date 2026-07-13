@@ -90,6 +90,8 @@ final class AppModel: ObservableObject {
   private let configurationStore: ConfigurationStore
   private let draftStore: DraftStore
   private let completionNotifications: any CompletionNotificationServing
+  private let backgroundRefreshScheduler: any BackgroundRefreshScheduling
+  private let backgroundSessionWatchStore: BackgroundSessionWatchStore
   private var client: RemoteAPIClientProtocol?
   private var pollHandles: [UUID: PollHandle] = [:]
   private var unreadBadgeSyncTask: Task<Void, Never>?
@@ -103,11 +105,15 @@ final class AppModel: ObservableObject {
   init(
     configurationStore: ConfigurationStore = ConfigurationStore(),
     draftStore: DraftStore = DraftStore(),
-    completionNotifications: any CompletionNotificationServing = CompletionNotificationService()
+    completionNotifications: any CompletionNotificationServing = CompletionNotificationService(),
+    backgroundRefreshScheduler: any BackgroundRefreshScheduling = BackgroundRefreshScheduler(),
+    backgroundSessionWatchStore: BackgroundSessionWatchStore = BackgroundSessionWatchStore()
   ) {
     self.configurationStore = configurationStore
     self.draftStore = draftStore
     self.completionNotifications = completionNotifications
+    self.backgroundRefreshScheduler = backgroundRefreshScheduler
+    self.backgroundSessionWatchStore = backgroundSessionWatchStore
     #if DEBUG
       if DebugAppFixture.recentSessionsEnabled {
         didStart = true
@@ -128,11 +134,15 @@ final class AppModel: ObservableObject {
       client: RemoteAPIClientProtocol,
       sessions: [AgentSession],
       draftStore: DraftStore,
-      completionNotifications: any CompletionNotificationServing = CompletionNotificationService()
+      completionNotifications: any CompletionNotificationServing = CompletionNotificationService(),
+      backgroundRefreshScheduler: any BackgroundRefreshScheduling = BackgroundRefreshScheduler(),
+      backgroundSessionWatchStore: BackgroundSessionWatchStore = BackgroundSessionWatchStore()
     ) {
       self.configurationStore = ConfigurationStore()
       self.draftStore = draftStore
       self.completionNotifications = completionNotifications
+      self.backgroundRefreshScheduler = backgroundRefreshScheduler
+      self.backgroundSessionWatchStore = backgroundSessionWatchStore
       configuration = testConfiguration
       self.client = client
       self.sessions = sessions
@@ -390,11 +400,12 @@ final class AppModel: ObservableObject {
       queuedPromptsBySession = [:]
       projectCommandConfigurations = [:]
       runningProjectCommandSessionIDs = []
-      applySnapshot(projects: snapshot.0, sessions: snapshot.1)
+      let completionTasks = applySnapshot(projects: snapshot.0, sessions: snapshot.1)
       loadQueuedPromptsForSessions()
       connectionState = .connected(version: health.version)
       startPollingForRunningSessions()
       deliverQueuedPromptsForIdleSessions()
+      await waitForCompletionNotifications(completionTasks)
     } catch {
       client = nil
       connectionState = .failed(message: error.localizedDescription)
@@ -411,6 +422,7 @@ final class AppModel: ObservableObject {
   }
 
   func disconnect() {
+    backgroundRefreshScheduler.cancel()
     cancelPolling()
     client = nil
     connectionState = configuration == nil ? .notConfigured : .disconnected
@@ -418,6 +430,9 @@ final class AppModel: ObservableObject {
 
   func removeConfiguration() {
     do {
+      if let serverIdentifier = configuration?.serverIdentifier {
+        backgroundSessionWatchStore.clear(serverIdentifier: serverIdentifier)
+      }
       try configurationStore.clear()
       configuration = nil
       projects = []
@@ -441,11 +456,12 @@ final class AppModel: ObservableObject {
       async let loadedProjects = client.projects()
       async let loadedSessions = client.sessions(projectID: nil)
       let snapshot = try await (loadedProjects, loadedSessions)
-      applySnapshot(projects: snapshot.0, sessions: snapshot.1)
+      let completionTasks = applySnapshot(projects: snapshot.0, sessions: snapshot.1)
       loadQueuedPromptsForSessions()
       connectionState = .connected(version: protocolVersion)
       startPollingForRunningSessions()
       deliverQueuedPromptsForIdleSessions()
+      await waitForCompletionNotifications(completionTasks)
     } catch {
       connectionState = .failed(message: error.localizedDescription)
     }
@@ -543,6 +559,7 @@ final class AppModel: ObservableObject {
       sessions.removeAll { $0.id == id }
       if selectedSessionID == id { selectedSessionID = nil }
       syncUnreadSessionBadge()
+      reconcileBackgroundRefreshState()
       connectionState = .connected(version: protocolVersion)
       return true
     } catch {
@@ -685,13 +702,15 @@ final class AppModel: ObservableObject {
   }
 
   private func updateProjectCommandRunningState(sessionID: UUID, isRunning: Bool) {
-    guard let current = projectCommandConfigurations[sessionID] else { return }
-    projectCommandConfigurations[sessionID] = ProjectCommandConfigurationResponse(
-      sessionID: current.sessionID,
-      makeTargets: current.makeTargets,
-      selectedMakeTarget: current.selectedMakeTarget,
-      isRunning: isRunning
-    )
+    if let current = projectCommandConfigurations[sessionID] {
+      projectCommandConfigurations[sessionID] = ProjectCommandConfigurationResponse(
+        sessionID: current.sessionID,
+        makeTargets: current.makeTargets,
+        selectedMakeTarget: current.selectedMakeTarget,
+        isRunning: isRunning
+      )
+    }
+    reconcileBackgroundRefreshState()
   }
 
   func documentContent(projectID: String, documentID: String) async throws
@@ -778,6 +797,7 @@ final class AppModel: ObservableObject {
         sessions[index].isRunning = true
         sessions[index].currentReasoning = nil
       }
+      reconcileBackgroundRefreshState()
       Task { await completionNotifications.requestAuthorizationIfNeeded() }
       if clearDraftOnSuccess { saveDraft("", sessionID: sessionID) }
       startPolling(
@@ -876,15 +896,55 @@ final class AppModel: ObservableObject {
   func sceneActivityChanged(isActive: Bool) {
     appIsActive = isActive
     if isActive {
+      backgroundRefreshScheduler.cancel()
       endBackgroundTask()
       Task { [weak self] in await self?.refreshForForeground() }
     } else if sessions.contains(where: \.hasActiveWork)
       || !runningProjectCommandSessionIDs.isEmpty
     {
+      reconcileBackgroundRefreshState()
       beginBackgroundPolling()
     } else {
+      backgroundRefreshScheduler.cancel()
       cancelPolling()
     }
+  }
+
+  func performBackgroundRefresh() async {
+    appIsActive = false
+
+    if client == nil {
+      if didStart {
+        await retryConnection()
+      } else {
+        await start()
+      }
+      reconcileBackgroundRefreshState()
+      return
+    }
+
+    let watchedSessionIDs = backgroundWatchedSessionIDs()
+    guard !activeBackgroundSessionIDs.isEmpty || !watchedSessionIDs.isEmpty else {
+      backgroundRefreshScheduler.cancel()
+      return
+    }
+
+    // The delivered request is no longer pending, so queue the next opportunity before doing I/O.
+    backgroundRefreshScheduler.schedule()
+    do {
+      guard let client else { return }
+      let health = try await client.health()
+      guard health.status == "ok" else { throw RemoteAPIError.invalidData }
+      let loadedSessions = try await client.sessions(projectID: nil)
+      protocolVersion = health.version
+      let completionTasks = applySnapshot(projects: projects, sessions: loadedSessions)
+      connectionState = .connected(version: health.version)
+      await waitForCompletionNotifications(completionTasks)
+    } catch {
+      guard !Task.isCancelled else { return }
+      connectionState = .failed(message: error.localizedDescription)
+    }
+    reconcileBackgroundRefreshState()
   }
 
   func refreshForForeground() async {
@@ -893,13 +953,22 @@ final class AppModel: ObservableObject {
     await markSessionRead(selectedSessionID)
   }
 
-  private func applySnapshot(projects: [AgentProject], sessions: [AgentSession]) {
+  @discardableResult
+  private func applySnapshot(projects: [AgentProject], sessions: [AgentSession])
+    -> [Task<Void, Never>]
+  {
     let previousSessions = Dictionary(uniqueKeysWithValues: self.sessions.map { ($0.id, $0) })
+    let watchedSessionIDs = backgroundWatchedSessionIDs()
+    var completionTasks: [Task<Void, Never>] = []
     self.projects = projects
     self.sessions = sessions
     for session in sessions {
-      if let previous = previousSessions[session.id] {
-        notifyIfCompleted(previous: previous, updated: session)
+      if let task = notifyIfCompleted(
+        previous: previousSessions[session.id],
+        updated: session,
+        watchedSessionIDs: watchedSessionIDs
+      ) {
+        completionTasks.append(task)
       }
     }
 
@@ -907,18 +976,31 @@ final class AppModel: ObservableObject {
       self.selectedSessionID = nil
     }
     syncUnreadSessionBadge()
+    reconcileBackgroundRefreshState()
+    return completionTasks
   }
 
   private func replaceSession(_ updated: AgentSession) {
+    let watchedSessionIDs = backgroundWatchedSessionIDs()
     if let index = sessions.firstIndex(where: { $0.id == updated.id }) {
       let previous = sessions[index]
       sessions[index] = updated
-      notifyIfCompleted(previous: previous, updated: updated)
+      notifyIfCompleted(
+        previous: previous,
+        updated: updated,
+        watchedSessionIDs: watchedSessionIDs
+      )
     } else {
       sessions.append(updated)
       loadQueuedPromptsIfNeeded(sessionID: updated.id)
+      notifyIfCompleted(
+        previous: nil,
+        updated: updated,
+        watchedSessionIDs: watchedSessionIDs
+      )
     }
     syncUnreadSessionBadge()
+    reconcileBackgroundRefreshState()
   }
 
   private func syncUnreadSessionBadge() {
@@ -1017,20 +1099,56 @@ final class AppModel: ObservableObject {
     endBackgroundTask()
   }
 
-  private func notifyIfCompleted(previous: AgentSession, updated: AgentSession) {
-    guard previous.hasActiveWork, !updated.hasActiveWork else { return }
+  @discardableResult
+  private func notifyIfCompleted(
+    previous: AgentSession?,
+    updated: AgentSession,
+    watchedSessionIDs: Set<UUID>
+  ) -> Task<Void, Never>? {
+    let wasActive = previous?.hasActiveWork ?? watchedSessionIDs.contains(updated.id)
+    guard wasActive, !updated.hasActiveWork else { return nil }
     Task { [weak self] in
       await Task.yield()
       await self?.deliverNextQueuedPromptIfPossible(sessionID: updated.id)
     }
     pendingCompletionNotifications += 1
-    Task {
+    return Task {
       await completionNotifications.notifyCompletion(for: updated)
       pendingCompletionNotifications -= 1
       if !appIsActive, pollHandles.isEmpty, pendingCompletionNotifications == 0 {
         endBackgroundTask()
       }
     }
+  }
+
+  private func waitForCompletionNotifications(_ tasks: [Task<Void, Never>]) async {
+    for task in tasks {
+      await task.value
+    }
+  }
+
+  private var activeBackgroundSessionIDs: Set<UUID> {
+    Set(sessions.lazy.filter(\.hasActiveWork).map(\.id))
+      .union(runningProjectCommandSessionIDs)
+  }
+
+  private func backgroundWatchedSessionIDs() -> Set<UUID> {
+    guard let serverIdentifier = configuration?.serverIdentifier else { return [] }
+    return backgroundSessionWatchStore.sessionIDs(serverIdentifier: serverIdentifier)
+  }
+
+  private func reconcileBackgroundRefreshState() {
+    guard let serverIdentifier = configuration?.serverIdentifier else {
+      backgroundRefreshScheduler.cancel()
+      return
+    }
+    let activeSessionIDs = activeBackgroundSessionIDs
+    backgroundSessionWatchStore.save(activeSessionIDs, serverIdentifier: serverIdentifier)
+    guard !appIsActive, client != nil, !activeSessionIDs.isEmpty else {
+      backgroundRefreshScheduler.cancel()
+      return
+    }
+    backgroundRefreshScheduler.schedule()
   }
 
   private func beginBackgroundPolling() {

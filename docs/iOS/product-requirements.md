@@ -21,6 +21,7 @@
 - As a developer, I want source-code files omitted from Browse Files but previewable from conversation links with stable formatting and line numbers, so that documentation stays easy to browse while changed code remains inspectable.
 - As a developer, I want links in transcripts and project documents to open on my phone, including links written as Mac project paths, so that desktop-generated references remain useful on mobile.
 - As a developer, I want a notification when an agent turn finishes or fails, so that I do not need to keep watching the conversation.
+- As a developer, I want the app to opportunistically check active sessions while suspended and stop checking when they become idle, so that long-running local tasks can eventually produce a completion notification without continuous background activity.
 - As a developer, I want the iOS app icon badge to show my unread-session count, so that pending agent updates are visible outside the app.
 
 ## Version-one constraints

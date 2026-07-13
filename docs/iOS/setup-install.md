@@ -78,6 +78,8 @@ make sim-document-browser-fixture
 
 On first connection, iOS asks for Local Network access. Allow it, then enter the Mac hostname/IP, port, and 64-character token. The host field accepts a bare hostname, an IPv4/IPv6 address, or an `http://` URL; version one rejects HTTPS and non-local transport assumptions.
 
+Keep Background App Refresh enabled for Remote Agent in iOS Settings to permit opportunistic active-session checks after the app is suspended. These checks are requested only while the Mac reports active work; iOS chooses the actual execution time, so completion notifications may be delayed.
+
 ## Troubleshooting
 
 - **Unauthorized:** copy the current token from the Mac app again.
@@ -85,3 +87,4 @@ On first connection, iOS asks for Local Network access. Allow it, then enter the
 - **Local Network denied:** enable Local Network for Remote Agent in iOS Settings.
 - **Mac hostname fails:** use the Mac's current LAN IP address.
 - **Session remains active after reconnecting:** pull to refresh or reopen the session; the server remains authoritative.
+- **No background completion notification:** confirm notification permission and Background App Refresh are enabled for Remote Agent. iOS may defer or skip an individual background refresh request.

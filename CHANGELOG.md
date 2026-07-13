@@ -24,6 +24,7 @@
 
 ### iOS
 
+- Added conditional background app refresh for active sessions: iOS requests the earliest system-managed refresh opportunity, persists watched session IDs across process termination, waits for the Mac health check before reading session status, schedules the existing completion notification before yielding, and stops requesting background work when all agents are idle.
 - Added host-backed Make target and combined Git Commit & Push controls to conversations, with live command chat rows and a dismissible full-output screen.
 - Shortened the session deletion confirmation button to “Delete,” keeping long session titles in the dialog message instead of the action label.
 - Fixed foreground restoration so an already-visible session is marked read after its refreshed unread state arrives, without requiring the user to leave and reopen it.

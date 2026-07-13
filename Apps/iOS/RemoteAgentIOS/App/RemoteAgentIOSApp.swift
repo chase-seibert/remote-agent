@@ -58,6 +58,9 @@ struct RemoteAgentIOSApp: App {
       }
       .preferredColorScheme(appearance.colorScheme)
     }
+    .backgroundTask(.appRefresh(BackgroundRefreshScheduler.identifier)) {
+      await model.performBackgroundRefresh()
+    }
   }
 
   private var appearance: AppAppearance {

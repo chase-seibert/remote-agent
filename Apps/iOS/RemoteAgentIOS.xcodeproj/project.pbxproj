@@ -27,6 +27,8 @@
 		A10000000000000000000014 /* ProjectDocumentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* ProjectDocumentsView.swift */; };
 		A10000000000000000000015 /* ProjectLinkResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* ProjectLinkResolver.swift */; };
 		A10000000000000000000016 /* CompletionNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* CompletionNotificationService.swift */; };
+		A10000000000000000000017 /* BackgroundRefreshScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001A /* BackgroundRefreshScheduler.swift */; };
+		A10000000000000000000018 /* BackgroundRefreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001B /* BackgroundRefreshTests.swift */; };
 		B10000000000000000000001 /* ConversationScrollIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* ConversationScrollIntegrationTests.swift */; };
 		C10000000000000000000001 /* RemoteAgentProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000001 /* RemoteAgentProtocol */; };
 /* End PBXBuildFile section */
@@ -73,6 +75,8 @@
 		A20000000000000000000017 /* ProjectDocumentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/ProjectDocumentsView.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* ProjectLinkResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/ProjectLinkResolver.swift; sourceTree = "<group>"; };
 		A20000000000000000000019 /* CompletionNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/CompletionNotificationService.swift; sourceTree = "<group>"; };
+		A2000000000000000000001A /* BackgroundRefreshScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/BackgroundRefreshScheduler.swift; sourceTree = "<group>"; };
+		A2000000000000000000001B /* BackgroundRefreshTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRefreshTests.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* ConversationScrollIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationScrollIntegrationTests.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* RemoteAgentIOSUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RemoteAgentIOSUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -107,6 +111,7 @@
 				A20000000000000000000007 /* ConfigurationStore.swift */,
 				A20000000000000000000008 /* DraftStore.swift */,
 				A20000000000000000000019 /* CompletionNotificationService.swift */,
+				A2000000000000000000001A /* BackgroundRefreshScheduler.swift */,
 				A20000000000000000000009 /* RootView.swift */,
 				A2000000000000000000000B /* SessionsView.swift */,
 				A2000000000000000000000C /* ConversationView.swift */,
@@ -123,6 +128,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000016 /* ActivityOrderingTests.swift */,
+				A2000000000000000000001B /* BackgroundRefreshTests.swift */,
 				A20000000000000000000011 /* APIConfigurationTests.swift */,
 				A20000000000000000000012 /* DraftStoreTests.swift */,
 				A20000000000000000000013 /* RemoteAPIClientTests.swift */,
@@ -248,13 +254,14 @@
 				A10000000000000000000014,
 				A10000000000000000000015,
 				A10000000000000000000016,
+				A10000000000000000000017,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A60000000000000000000002 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A10000000000000000000010, A10000000000000000000011, A10000000000000000000012, A10000000000000000000013);
+			files = (A10000000000000000000010, A10000000000000000000011, A10000000000000000000012, A10000000000000000000013, A10000000000000000000018);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		B60000000000000000000001 /* Sources */ = {
