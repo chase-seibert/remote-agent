@@ -16,6 +16,10 @@ final class RemoteAgentProtocolTests: XCTestCase {
       "/v1/sessions/AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE/messages"
     )
     XCTAssertEqual(
+      RemoteAgentEndpoint.sessionUnread(id),
+      "/v1/sessions/AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE/unread"
+    )
+    XCTAssertEqual(
       RemoteAgentEndpoint.sessionPromptQueue(id),
       "/v1/sessions/AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE/prompt-queue"
     )

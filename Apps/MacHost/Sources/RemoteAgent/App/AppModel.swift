@@ -231,6 +231,14 @@ final class AppModel: ObservableObject {
     persist()
   }
 
+  func markSessionUnread(_ id: UUID) {
+    guard let index = sessions.firstIndex(where: { $0.id == id }),
+      !sessions[index].isUnread
+    else { return }
+    sessions[index].isUnread = true
+    persist()
+  }
+
   @discardableResult
   func deleteSession(_ id: UUID) throws -> AgentSession {
     guard let index = sessions.firstIndex(where: { $0.id == id }) else {
@@ -949,6 +957,13 @@ final class AppModel: ObservableObject {
       }
       if request.method == "POST", parts.count == 4, parts[3] == "read" {
         markSessionRead(sessionID)
+        guard let updated = sessions.first(where: { $0.id == sessionID }) else {
+          return .json(APIErrorBody(error: "Session not found"), status: 404)
+        }
+        return .json(updated)
+      }
+      if request.method == "POST", parts.count == 4, parts[3] == "unread" {
+        markSessionUnread(sessionID)
         guard let updated = sessions.first(where: { $0.id == sessionID }) else {
           return .json(APIErrorBody(error: "Session not found"), status: 404)
         }

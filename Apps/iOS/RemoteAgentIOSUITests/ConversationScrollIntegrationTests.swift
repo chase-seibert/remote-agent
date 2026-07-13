@@ -47,6 +47,16 @@ final class ConversationScrollIntegrationTests: XCTestCase {
     )
   }
 
+  func testReadSessionExposesMarkAsUnreadAction() {
+    let app = launch(fixture: "recent-sessions")
+    let session = app.staticTexts["Update project documentation"].firstMatch
+    XCTAssertTrue(session.waitForExistence(timeout: 5))
+
+    session.swipeRight()
+
+    XCTAssertTrue(app.buttons["Mark as Unread"].waitForExistence(timeout: 2))
+  }
+
   func testConnectionScreenClearlyShowsConnectedMac() {
     let app = launch(fixture: "connection-connected")
 

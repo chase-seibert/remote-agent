@@ -19,6 +19,7 @@ struct RecentSessionsView: View {
           RecentSessionRow(session: session, projectName: model.projectName(for: session))
             .tag(session.id)
             .swipeActions(edge: .leading, allowsFullSwipe: false) {
+              readStatusButton(for: session)
               pinButton(for: session)
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -26,6 +27,7 @@ struct RecentSessionsView: View {
               renameButton(for: session)
             }
             .contextMenu {
+              readStatusButton(for: session)
               pinButton(for: session)
               renameButton(for: session)
               Divider()
@@ -132,6 +134,22 @@ struct RecentSessionsView: View {
       Task { await model.setSessionPinned(session.id, isPinned: !session.isPinned) }
     }
     .tint(.orange)
+  }
+
+  private func readStatusButton(for session: AgentSession) -> some View {
+    Button(
+      session.isUnread ? "Mark as Read" : "Mark as Unread",
+      systemImage: session.isUnread ? "envelope.open" : "envelope.badge"
+    ) {
+      Task {
+        if session.isUnread {
+          await model.markSessionRead(session.id)
+        } else {
+          await model.markSessionUnread(session.id)
+        }
+      }
+    }
+    .tint(.blue)
   }
 
   private func deleteButton(for session: AgentSession) -> some View {

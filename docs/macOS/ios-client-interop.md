@@ -87,6 +87,8 @@ The host validates the target against the session project's current Makefile and
 
 `POST /v1/sessions/<session-uuid>/read` marks a displayed session read and returns the updated session. The iOS client should call this only after presenting the newest result to the user; fetching a session does not implicitly mark it read.
 
+`POST /v1/sessions/<session-uuid>/unread` marks a session unread and returns the updated session. This changes only its unread state; it does not update activity time or reorder the session.
+
 ### Submit a prompt
 
 `POST /v1/sessions/<session-uuid>/messages`

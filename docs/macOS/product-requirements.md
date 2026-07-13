@@ -12,6 +12,7 @@
 - As a developer, I want one Commit & Push control that stages every working-tree change, generates its subject on device, commits, and pushes when an upstream exists, so that I can publish completed work without opening Terminal or fail merely because a local branch has no upstream.
 - As a developer, I want project commands to appear immediately with running status, become a success or failure summary in place, and expose full output on demand, so that terminal noise does not overwhelm the conversation.
 - As a developer, I want sessions ordered by recent activity and unseen results clearly marked, so that I can quickly find work that needs attention.
+- As a developer, I want to mark a session unread without changing its activity order, so that I can keep follow-up work visible for later.
 - As a developer, I want to dictate a prompt using macOS speech recognition, so that I can compose without typing.
 - As a developer, I want local Markdown and HTML links in agent responses to open inside Remote Agent, so that I can inspect generated reports without leaving the conversation workflow.
 - As a Mac user, I want standard menus, keyboard shortcuts, sidebars, Settings, text selection, and Finder integration, so that the app behaves like a native Mac app.

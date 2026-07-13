@@ -30,8 +30,12 @@ struct AllSessionsSidebarView: View {
       )
       .tag(session.id)
       .contextMenu {
-        if session.isUnread {
-          Button("Mark as Read") { model.markSessionRead(session.id) }
+        Button(session.isUnread ? "Mark as Read" : "Mark as Unread") {
+          if session.isUnread {
+            model.markSessionRead(session.id)
+          } else {
+            model.markSessionUnread(session.id)
+          }
         }
         Button(session.isPinned ? "Unpin Session" : "Pin Session") {
           do {

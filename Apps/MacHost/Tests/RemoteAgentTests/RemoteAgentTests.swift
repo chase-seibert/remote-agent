@@ -794,6 +794,63 @@ struct RemoteAgentTests {
   }
 
   @MainActor
+  @Test func sessionUnreadAPIPersistsWithoutChangingActivityTime() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let projectDirectory = directory.appendingPathComponent("Example", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+      at: projectDirectory,
+      withIntermediateDirectories: true
+    )
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let settings = AppSettings(defaults: defaults)
+    settings.projectsRoot = directory.path
+    settings.apiToken = "test-token"
+    let store = SessionStore(fileURL: directory.appendingPathComponent("sessions.json"))
+    let model = AppModel(
+      settings: settings,
+      store: store,
+      activityStore: APIActivityStore(fileURL: directory.appendingPathComponent("activity.json"))
+    )
+    await model.refreshProjects()
+    let project = try #require(model.projects.first)
+    let session = try #require(model.createSession(projectID: project.id, select: false))
+
+    let response = await model.handleAPI(
+      try apiRequest(
+        method: "POST",
+        path: RemoteAgentEndpoint.sessionUnread(session.id),
+        token: settings.apiToken
+      ))
+
+    #expect(response.status == 200)
+    let unread = try decodeAPI(AgentSession.self, from: response)
+    #expect(unread.isUnread)
+    #expect(
+      model.sessions.first(where: { $0.id == session.id })?.updatedAt == session.updatedAt
+    )
+
+    var persisted: [AgentSession] = []
+    for _ in 0..<100 {
+      persisted = try await store.load()
+      if persisted.first?.isUnread == true { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(persisted.first?.isUnread == true)
+
+    let readResponse = await model.handleAPI(
+      try apiRequest(
+        method: "POST",
+        path: RemoteAgentEndpoint.sessionRead(session.id),
+        token: settings.apiToken
+      ))
+    #expect(!(try decodeAPI(AgentSession.self, from: readResponse)).isUnread)
+  }
+
+  @MainActor
   @Test func hostOwnsEditsAndExecutesQueuedPromptsWithoutIOS() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)

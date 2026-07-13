@@ -11,6 +11,7 @@
 - As a developer, I want to open a project-command chat row and inspect the Mac's full output on a dismissible screen, so that command details remain available without cluttering the transcript.
 - As a developer, I want active turns to update automatically, so that I know when Codex has finished or failed.
 - As a developer returning to an already-open conversation, I want newly delivered activity marked read immediately, so that its unread marker does not remain stale.
+- As a developer, I want to mark a session unread from the session list, so that I can return to work that still needs my attention.
 - As a developer, I want a session to open at its latest activity, so that I do not have to manually scroll through old messages.
 - As an iPhone user, I want to swipe right from a conversation to return to the global session list with the same transition as Back, so that one-handed navigation stays familiar.
 - As a security-conscious user, I want the bearer token kept in Keychain and excluded from diagnostics, so that credentials are not persisted in ordinary preferences.

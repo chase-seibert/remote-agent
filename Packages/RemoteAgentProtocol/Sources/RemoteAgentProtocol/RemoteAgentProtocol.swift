@@ -18,6 +18,10 @@ public enum RemoteAgentEndpoint {
     "\(session(id))/read"
   }
 
+  public static func sessionUnread(_ id: UUID) -> String {
+    "\(session(id))/unread"
+  }
+
   public static func sessionMessages(_ id: UUID) -> String {
     "\(session(id))/messages"
   }

@@ -512,6 +512,26 @@ final class AppModel: ObservableObject {
     }
   }
 
+  @discardableResult
+  func markSessionUnread(_ id: UUID) async -> Bool {
+    guard sessions.first(where: { $0.id == id })?.isUnread == false else { return true }
+    guard let client else {
+      presentedError = RemoteAPIError.notConnected.localizedDescription
+      return false
+    }
+    do {
+      replaceSession(try await client.markSessionUnread(id: id))
+      connectionState = .connected(version: protocolVersion)
+      return true
+    } catch {
+      presentedError = error.localizedDescription
+      if case RemoteAPIError.unreachable = error {
+        connectionState = .failed(message: error.localizedDescription)
+      }
+      return false
+    }
+  }
+
   func renameSession(_ id: UUID, title rawTitle: String) async -> Bool {
     let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !title.isEmpty, title.count <= 120 else {

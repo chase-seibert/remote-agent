@@ -225,6 +225,28 @@ final class UnreadBadgeTests: XCTestCase {
     XCTAssertEqual(badgeCounts, [1, 0])
   }
 
+  func testMarkingSessionUnreadSetsAppBadge() async throws {
+    let read = makeSession(isUnread: false)
+    var unread = read
+    unread.isUnread = true
+    let notifications = BadgeRecordingNotificationService()
+    let client = UnreadBadgeAPIClient(updatedSession: unread)
+    let model = makeModel(
+      sessions: [read],
+      client: client,
+      notifications: notifications
+    )
+    try await waitForBadgeCount(0, notifications: notifications)
+
+    let markedUnread = await model.markSessionUnread(read.id)
+    XCTAssertTrue(markedUnread)
+
+    try await waitForBadgeCount(1, notifications: notifications)
+    XCTAssertTrue(model.sessions.first?.isUnread == true)
+    let markedSessionIDs = await client.markedUnreadSessionIDs
+    XCTAssertEqual(markedSessionIDs, [read.id])
+  }
+
   func testForegroundRefreshMarksAlreadyVisibleSessionRead() async {
     let previouslyRead = makeSession(isUnread: false)
     var unreadOnServer = previouslyRead
@@ -422,6 +444,7 @@ private actor BadgeRecordingNotificationService: CompletionNotificationServing {
 
 private actor UnreadBadgeAPIClient: RemoteAPIClientProtocol {
   let updatedSession: AgentSession
+  private(set) var markedUnreadSessionIDs: [UUID] = []
 
   init(updatedSession: AgentSession) {
     self.updatedSession = updatedSession
@@ -429,6 +452,11 @@ private actor UnreadBadgeAPIClient: RemoteAPIClientProtocol {
 
   func markSessionRead(id: UUID) async throws -> AgentSession {
     updatedSession
+  }
+
+  func markSessionUnread(id: UUID) async throws -> AgentSession {
+    markedUnreadSessionIDs.append(id)
+    return updatedSession
   }
 
   func health() async throws -> HealthResponse { throw RemoteAPIError.invalidData }

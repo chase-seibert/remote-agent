@@ -10,6 +10,7 @@ protocol RemoteAPIClientProtocol: Sendable {
   func setSessionPinned(id: UUID, isPinned: Bool) async throws -> AgentSession
   func deleteSession(id: UUID) async throws -> AgentSession
   func markSessionRead(id: UUID) async throws -> AgentSession
+  func markSessionUnread(id: UUID) async throws -> AgentSession
   func documents(projectID: String) async throws -> [ProjectDocument]
   func documentContent(projectID: String, documentID: String) async throws
     -> ProjectDocumentContent
@@ -32,6 +33,10 @@ protocol RemoteAPIClientProtocol: Sendable {
 }
 
 extension RemoteAPIClientProtocol {
+  func markSessionUnread(id _: UUID) async throws -> AgentSession {
+    throw RemoteAPIError.notConnected
+  }
+
   func enqueuePrompt(_: String, sessionID _: UUID) async throws -> QueuedPrompt {
     throw RemoteAPIError.notConnected
   }
@@ -141,6 +146,10 @@ final class RemoteAPIClient: RemoteAPIClientProtocol, @unchecked Sendable {
 
   func markSessionRead(id: UUID) async throws -> AgentSession {
     try await request(path: RemoteAgentEndpoint.sessionRead(id), method: "POST")
+  }
+
+  func markSessionUnread(id: UUID) async throws -> AgentSession {
+    try await request(path: RemoteAgentEndpoint.sessionUnread(id), method: "POST")
   }
 
   func documents(projectID: String) async throws -> [ProjectDocument] {

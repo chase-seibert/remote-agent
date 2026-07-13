@@ -115,6 +115,42 @@ final class RemoteAPIClientTests: XCTestCase {
     XCTAssertFalse(result.isUnread)
   }
 
+  func testMarksSessionUnreadOnHost() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let sessionID = UUID()
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(request.url?.path, "/v1/sessions/\(sessionID.uuidString)/unread")
+      XCTAssertEqual(request.httpMethod, "POST")
+      let json = """
+        {
+          "id":"\(sessionID.uuidString)",
+          "projectID":"opaque",
+          "projectPath":"/Users/example/project",
+          "codexSessionID":null,
+          "title":"Unread session",
+          "createdAt":"2026-07-12T20:00:00Z",
+          "updatedAt":"2026-07-12T20:00:01Z",
+          "messages":[],
+          "isRunning":false,
+          "isUnread":true
+        }
+        """
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+        Data(json.utf8)
+      )
+    }
+
+    let result = try await client.markSessionUnread(id: sessionID)
+    XCTAssertTrue(result.isUnread)
+  }
+
   func testRenamesSessionOnHost() async throws {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [MockURLProtocol.self]
