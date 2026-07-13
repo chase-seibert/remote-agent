@@ -6,6 +6,7 @@
 
 ### Mac Host
 
+- Improved on-device commit subjects by prioritizing behavioral context over filenames and using the General Foundation Model with structured greedy output and an imperative outcome prompt.
 - Kept the selected Make target name visible beside the hammer in both the Mac and mobile split buttons.
 - Added authenticated mobile API routes for Make target discovery and selection, remote Make and combined Git Commit & Push execution, and session-scoped command-result retrieval.
 - Fixed Make target selection so the split menu updates immediately and the selected target persists on its owning session across app launches.

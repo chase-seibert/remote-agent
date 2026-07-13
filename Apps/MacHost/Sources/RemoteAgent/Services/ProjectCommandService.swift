@@ -200,6 +200,25 @@ protocol CommitMessageGenerating: Sendable {
   func generate(stagedSummary: String, stagedDiff: String) async throws -> String
 }
 
+enum CommitMessageContext {
+  static let maximumCharacters = 4_000
+
+  static func prioritizedDiff(highSignalDiff: String, compactDiff: String) -> String {
+    let highSignal = highSignalDiff.trimmingCharacters(in: .whitespacesAndNewlines)
+    let source = highSignal.isEmpty ? compactDiff : highSignal
+    return String(source.prefix(maximumCharacters))
+  }
+}
+
+#if canImport(FoundationModels)
+  @available(macOS 26.0, *)
+  @Generable
+  private struct GeneratedCommitSubject {
+    @Guide(description: "A single natural imperative Git subject under 72 characters")
+    var subject: String
+  }
+#endif
+
 struct FoundationCommitMessageGenerator: CommitMessageGenerating {
   func generate(stagedSummary: String, stagedDiff: String) async throws -> String {
     #if canImport(FoundationModels)
@@ -221,7 +240,7 @@ struct FoundationCommitMessageGenerator: CommitMessageGenerating {
       stagedSummary: String,
       stagedDiff: String
     ) async throws -> String {
-      let model = SystemLanguageModel.default
+      let model = SystemLanguageModel(useCase: .general)
       guard model.isAvailable else {
         throw ProjectCommandError.foundationModelsUnavailable(
           Self.unavailableDescription(model.availability)
@@ -230,21 +249,27 @@ struct FoundationCommitMessageGenerator: CommitMessageGenerating {
       let session = LanguageModelSession(
         model: model,
         instructions: """
-          Write one plain-text Git commit subject. Use an imperative verb, describe the staged \
-          change, use no prefix or punctuation wrapper, and stay under 72 characters.
+          Write one natural Git subject under 72 characters. The first word must be an imperative \
+          verb such as Enable, Keep, Notify, Improve, Prevent, Support, or Fix. Describe the primary \
+          behavior or user outcome, not files, tests, types, frameworks, or implementation work. \
+          Return only the subject and never use past tense or a trailing period.
           """
       )
       let response = try await session.respond(
         to: """
-          Staged files:
-          \(stagedSummary)
+          Silently determine what behavior this compact diff makes possible and when that behavior \
+          matters. Express that result as the subject. Paths are context only.
 
-          Staged diff:
+          Compact diff:
           \(stagedDiff)
+
+          Changed paths:
+          \(stagedSummary)
           """,
-        options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 24)
+        generating: GeneratedCommitSubject.self,
+        options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 20)
       )
-      return try CommitMessageSanitizer.sanitize(response.content)
+      return try CommitMessageSanitizer.sanitize(response.content.subject)
     }
 
     @available(macOS 26.0, *)
@@ -453,23 +478,40 @@ struct ProjectCommandService: Sendable {
       )
     }
 
-    let diff = await runner.run(
+    let compactDiff = await runner.run(
       executable: "/usr/bin/git",
-      arguments: ["diff", "--cached", "--no-ext-diff", "--no-color", "--"],
+      arguments: [
+        "diff", "--cached", "--no-ext-diff", "--no-color", "--unified=0", "--", ".",
+        ":(exclude)**/*.xcodeproj/project.pbxproj",
+      ],
       currentDirectory: projectPath,
-      displayCommand: "git diff --cached --no-ext-diff --no-color --"
+      displayCommand: "git diff --cached --no-ext-diff --no-color --unified=0"
     )
-    guard diff.exitCode == 0 else {
+    guard compactDiff.exitCode == 0 else {
       return failureOutcome(
         title: "Git Commit",
         command: "git add --all && git commit",
-        message: combinedOutput(add.output, diff.output),
+        message: combinedOutput(add.output, compactDiff.output),
         startedAt: startedAt
       )
     }
 
+    let highSignalDiff = await runner.run(
+      executable: "/usr/bin/git",
+      arguments: [
+        "diff", "--cached", "--no-ext-diff", "--no-color", "--unified=0", "--",
+        "CHANGELOG.md", "docs/iOS/product-requirements.md",
+        "docs/macOS/product-requirements.md",
+      ],
+      currentDirectory: projectPath,
+      displayCommand: "git diff --cached --no-ext-diff --no-color --unified=0 -- product context"
+    )
+
     do {
-      let stagedDiff = String(diff.output.prefix(8_000))
+      let stagedDiff = CommitMessageContext.prioritizedDiff(
+        highSignalDiff: highSignalDiff.exitCode == 0 ? highSignalDiff.output : "",
+        compactDiff: compactDiff.output
+      )
       let message = try await commitMessageGenerator.generate(
         stagedSummary: stagedSummary,
         stagedDiff: stagedDiff

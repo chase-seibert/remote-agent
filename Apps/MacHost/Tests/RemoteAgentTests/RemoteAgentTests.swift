@@ -12,6 +12,15 @@ private struct FixedCommitMessageGenerator: CommitMessageGenerating {
   }
 }
 
+private actor CapturingCommitMessageGenerator: CommitMessageGenerating {
+  private(set) var context: (summary: String, diff: String)?
+
+  func generate(stagedSummary: String, stagedDiff: String) async throws -> String {
+    context = (stagedSummary, stagedDiff)
+    return "Enable background refresh"
+  }
+}
+
 struct RemoteAgentTests {
   @Test func parsesCodexJSONLEvents() {
     var parser = CodexEventAccumulator()
@@ -82,6 +91,25 @@ struct RemoteAgentTests {
     let truncatedMessage = try CommitMessageSanitizer.sanitize(longMessage)
     #expect(truncatedMessage.count <= 72)
     #expect(truncatedMessage.hasSuffix("word"))
+  }
+
+  @Test func commitMessageContextPrefersHighSignalIntent() {
+    let result = CommitMessageContext.prioritizedDiff(
+      highSignalDiff: "  Enable completion notifications for background sessions.  ",
+      compactDiff: "Add BackgroundRefreshScheduler.swift"
+    )
+
+    #expect(result == "Enable completion notifications for background sessions.")
+  }
+
+  @Test func commitMessageContextFallsBackToBoundedCompactDiff() {
+    let compactDiff = String(repeating: "x", count: CommitMessageContext.maximumCharacters + 50)
+    let result = CommitMessageContext.prioritizedDiff(
+      highSignalDiff: "",
+      compactDiff: compactDiff
+    )
+
+    #expect(result.count == CommitMessageContext.maximumCharacters)
   }
 
   @Test func capturedProcessRunnerCollectsOutputAndExitStatus() async {
@@ -433,6 +461,49 @@ struct RemoteAgentTests {
     #expect(!placeholder.text.contains("PRIVATE COMMAND OUTPUT"))
     #expect(result.output.contains("PRIVATE COMMAND OUTPUT"))
     #expect(!result.isRunning)
+  }
+
+  @Test func gitCommitPrioritizesBehavioralContextForMessageGeneration() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let runner = CapturedProcessRunner()
+
+    for arguments in [
+      ["init"],
+      ["config", "user.name", "Remote Agent Tests"],
+      ["config", "user.email", "remote-agent-tests@example.invalid"],
+    ] {
+      let setup = await runner.run(
+        executable: "/usr/bin/git",
+        arguments: arguments,
+        currentDirectory: directory.path,
+        displayCommand: "git \(arguments.joined(separator: " "))"
+      )
+      #expect(setup.exitCode == 0)
+    }
+    try "- Enable completion notifications for background sessions.\n".write(
+      to: directory.appendingPathComponent("CHANGELOG.md"),
+      atomically: true,
+      encoding: .utf8
+    )
+    try "struct BackgroundRefreshScheduler {}\n".write(
+      to: directory.appendingPathComponent("BackgroundRefreshScheduler.swift"),
+      atomically: true,
+      encoding: .utf8
+    )
+
+    let generator = CapturingCommitMessageGenerator()
+    let service = ProjectCommandService(runner: runner, commitMessageGenerator: generator)
+    let outcome = await service.runGitCommitAndPush(projectPath: directory.path)
+    let context = try #require(await generator.context)
+
+    #expect(outcome.succeeded)
+    #expect(context.summary.contains("CHANGELOG.md"))
+    #expect(context.summary.contains("BackgroundRefreshScheduler.swift"))
+    #expect(context.diff.contains("Enable completion notifications for background sessions"))
+    #expect(!context.diff.contains("BackgroundRefreshScheduler"))
   }
 
   @Test func gitCommitAndPushCommitsAllChangesAndSilentlySkipsMissingUpstream() async throws {
