@@ -285,6 +285,32 @@ struct RemoteAgentTests {
     #expect(blocks[2] == .code(language: "swift", text: "print(\"hello\")"))
   }
 
+  @Test func markdownParserRecognizesTablesAndColumnAlignment() {
+    let source = """
+      ## Team Review
+
+      | Team | Capacity usage | Readout |
+      | :--- | :---: | ---: |
+      | Expansion | 99.39% | Monthly \\| weekly |
+      | Formation | 69.19% |
+      """
+
+    let blocks = MarkdownBlockParser().parse(source)
+
+    #expect(blocks.count == 2)
+    #expect(blocks[0] == .heading(level: 2, text: "Team Review"))
+    #expect(
+      blocks[1]
+        == .table(
+          headers: ["Team", "Capacity usage", "Readout"],
+          alignments: [.leading, .center, .trailing],
+          rows: [
+            ["Expansion", "99.39%", "Monthly \\| weekly"],
+            ["Formation", "69.19%", ""],
+          ]
+        ))
+  }
+
   @Test func projectsSortByMostRecentSessionThenAlphabetically() {
     let alpha = AgentProject(path: "/tmp/Alpha")
     let beta = AgentProject(path: "/tmp/Beta")

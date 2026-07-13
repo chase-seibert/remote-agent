@@ -52,7 +52,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   let title: String
   let createdAt: Date
   let updatedAt: Date
-  let messages: [AgentMessage]
+  var messages: [AgentMessage]
   var isRunning: Bool
   var currentReasoning: String?
   var isUnread: Bool

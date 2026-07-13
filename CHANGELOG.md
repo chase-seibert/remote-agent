@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-13
+
+### Mac Host
+
+- Added native Markdown table parsing and bordered, horizontally scrollable grid rendering with header emphasis, wrapped cells, alternating rows, and declared column alignment in conversations and document previews.
+
+### iOS
+
+- Added formatted Markdown tables to document previews with the same header, alignment, border, wrapping, row shading, and horizontal-scrolling behavior.
+
 ## 2026-07-12
 
 - Consolidated the Mac host, iOS client, documentation, and build orchestration into one monorepo with a shared `RemoteAgentProtocol` Swift package.
@@ -27,6 +37,7 @@
 
 ### iOS
 
+- Fixed prompt submission ordering so the outgoing blue message appears before the green agent-working state, with optimistic messages removed if submission fails.
 - Added Mark as Read/Unread to session-row swipe and long-press actions, with immediate unread-dot and app-icon badge synchronization.
 - Moved queued prompts from device storage into Mac session snapshots, added native editing and host-backed removal, and added migration of queues saved by older iOS builds on connection.
 - Made the connection sheet lead with a clear live-status summary showing the Mac endpoint, API version or failure detail, and an inline retry action for unavailable saved connections.

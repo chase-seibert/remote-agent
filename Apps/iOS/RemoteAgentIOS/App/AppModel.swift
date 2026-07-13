@@ -857,6 +857,17 @@ final class AppModel: ObservableObject {
     sendingSessionIDs.insert(sessionID)
     defer { sendingSessionIDs.remove(sessionID) }
 
+    let optimisticMessage = AgentMessage(
+      id: UUID(),
+      role: .user,
+      text: text,
+      createdAt: Date(),
+      state: .complete
+    )
+    if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+      sessions[index].messages.append(optimisticMessage)
+    }
+
     do {
       let accepted = try await client.sendMessage(text, sessionID: sessionID)
       guard accepted.sessionID == sessionID, accepted.status == "accepted" else {
@@ -878,6 +889,9 @@ final class AppModel: ObservableObject {
       )
       return true
     } catch {
+      if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+        sessions[index].messages.removeAll { $0.id == optimisticMessage.id }
+      }
       if case RemoteAPIError.http(status: 409, detail: _) = error {
         return await enqueuePromptOnHost(
           text,

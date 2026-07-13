@@ -423,6 +423,8 @@ private struct MarkdownDocumentPreview: View {
       }
       .padding(12)
       .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+    case .table(let headers, let alignments, let rows):
+      markdownTable(headers: headers, alignments: alignments, rows: rows)
     case .rule:
       Divider()
     }
@@ -456,6 +458,95 @@ private struct MarkdownDocumentPreview: View {
   private func taskContent(_ content: String) -> String {
     taskState(content) == nil ? content : String(content.dropFirst(4))
   }
+
+  private func markdownTable(
+    headers: [String],
+    alignments: [MarkdownDocumentTableAlignment],
+    rows: [[String]]
+  ) -> some View {
+    let shape = RoundedRectangle(cornerRadius: 9)
+    return ScrollView(.horizontal) {
+      Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+        GridRow {
+          ForEach(headers.indices, id: \.self) { column in
+            tableCell(
+              headers[column],
+              width: tableColumnWidth(headers: headers, rows: rows, column: column),
+              alignment: alignments[column],
+              isHeader: true,
+              isAlternating: false
+            )
+          }
+        }
+        ForEach(rows.indices, id: \.self) { row in
+          GridRow {
+            ForEach(headers.indices, id: \.self) { column in
+              tableCell(
+                rows[row][column],
+                width: tableColumnWidth(headers: headers, rows: rows, column: column),
+                alignment: alignments[column],
+                isHeader: false,
+                isAlternating: row.isMultiple(of: 2) == false
+              )
+            }
+          }
+        }
+      }
+      .clipShape(shape)
+      .overlay(shape.stroke(Color.secondary.opacity(0.4), lineWidth: 1))
+    }
+  }
+
+  private func tableCell(
+    _ content: String,
+    width: CGFloat,
+    alignment: MarkdownDocumentTableAlignment,
+    isHeader: Bool,
+    isAlternating: Bool
+  ) -> some View {
+    Text(inlineMarkdown(content))
+      .font(isHeader ? .subheadline.weight(.semibold) : .subheadline)
+      .multilineTextAlignment(textAlignment(alignment))
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(width: width, alignment: viewAlignment(alignment))
+      .frame(maxHeight: .infinity, alignment: viewAlignment(alignment))
+      .padding(.horizontal, 10)
+      .padding(.vertical, 9)
+      .background(
+        isHeader
+          ? Color.primary.opacity(0.1)
+          : Color.primary.opacity(isAlternating ? 0.035 : 0)
+      )
+      .overlay(Rectangle().stroke(Color.secondary.opacity(0.22), lineWidth: 0.5))
+  }
+
+  private func tableColumnWidth(headers: [String], rows: [[String]], column: Int) -> CGFloat {
+    let values = [headers[column]] + rows.map { $0[column] }
+    let longest = values.map(\.count).max() ?? 0
+    return min(max(CGFloat(longest) * 7, 88), 260)
+  }
+
+  private func viewAlignment(_ alignment: MarkdownDocumentTableAlignment) -> Alignment {
+    switch alignment {
+    case .leading: .topLeading
+    case .center: .top
+    case .trailing: .topTrailing
+    }
+  }
+
+  private func textAlignment(_ alignment: MarkdownDocumentTableAlignment) -> TextAlignment {
+    switch alignment {
+    case .leading: .leading
+    case .center: .center
+    case .trailing: .trailing
+    }
+  }
+}
+
+enum MarkdownDocumentTableAlignment: Equatable {
+  case leading
+  case center
+  case trailing
 }
 
 enum MarkdownDocumentBlock: Equatable {
@@ -465,6 +556,11 @@ enum MarkdownDocumentBlock: Equatable {
   case orderedListItem(depth: Int, number: String, content: String)
   case quote(String)
   case code(language: String?, content: String)
+  case table(
+    headers: [String],
+    alignments: [MarkdownDocumentTableAlignment],
+    rows: [[String]]
+  )
   case rule
 }
 
@@ -476,6 +572,8 @@ enum MarkdownDocumentParser {
     var codeLines: [String] = []
     var codeLanguage: String?
     var inCodeBlock = false
+    let lines = text.components(separatedBy: .newlines)
+    var index = 0
 
     func flushParagraph() {
       guard !paragraphLines.isEmpty else { return }
@@ -489,7 +587,8 @@ enum MarkdownDocumentParser {
       quoteLines.removeAll()
     }
 
-    for line in text.components(separatedBy: .newlines) {
+    while index < lines.count {
+      let line = lines[index]
       let trimmed = line.trimmingCharacters(in: .whitespaces)
 
       if trimmed.hasPrefix("```") {
@@ -504,17 +603,20 @@ enum MarkdownDocumentParser {
           codeLanguage = language.isEmpty ? nil : language
         }
         inCodeBlock.toggle()
+        index += 1
         continue
       }
 
       if inCodeBlock {
         codeLines.append(line)
+        index += 1
         continue
       }
 
       if trimmed.isEmpty {
         flushParagraph()
         flushQuote()
+        index += 1
         continue
       }
 
@@ -523,21 +625,35 @@ enum MarkdownDocumentParser {
         quoteLines.append(
           String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
         )
+        index += 1
         continue
       }
       flushQuote()
 
-      if let heading = heading(from: trimmed) {
+      if let table = table(in: lines, at: index) {
+        flushParagraph()
+        result.append(
+          .table(
+            headers: table.headers,
+            alignments: table.alignments,
+            rows: table.rows
+          ))
+        index = table.nextIndex
+      } else if let heading = heading(from: trimmed) {
         flushParagraph()
         result.append(heading)
+        index += 1
       } else if isRule(trimmed) {
         flushParagraph()
         result.append(.rule)
+        index += 1
       } else if let listItem = listItem(from: line) {
         flushParagraph()
         result.append(listItem)
+        index += 1
       } else {
         paragraphLines.append(trimmed)
+        index += 1
       }
     }
 
@@ -547,6 +663,98 @@ enum MarkdownDocumentParser {
     flushParagraph()
     flushQuote()
     return result.isEmpty ? [.paragraph("")] : result
+  }
+
+  private static func table(
+    in lines: [String],
+    at index: Int
+  ) -> (
+    headers: [String],
+    alignments: [MarkdownDocumentTableAlignment],
+    rows: [[String]],
+    nextIndex: Int
+  )? {
+    guard index + 1 < lines.count,
+      let headers = tableCells(in: lines[index]),
+      let delimiterCells = tableCells(in: lines[index + 1]),
+      !headers.isEmpty,
+      headers.count == delimiterCells.count
+    else { return nil }
+
+    let alignments = delimiterCells.compactMap(tableAlignment)
+    guard alignments.count == headers.count else { return nil }
+
+    var rows: [[String]] = []
+    var nextIndex = index + 2
+    while nextIndex < lines.count,
+      !lines[nextIndex].trimmingCharacters(in: .whitespaces).isEmpty,
+      let cells = tableCells(in: lines[nextIndex])
+    {
+      rows.append(normalizedTableRow(cells, columnCount: headers.count))
+      nextIndex += 1
+    }
+    return (headers, alignments, rows, nextIndex)
+  }
+
+  private static func tableCells(in line: String) -> [String]? {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    guard trimmed.contains("|") else { return nil }
+
+    var cells: [String] = []
+    var current = ""
+    var isEscaped = false
+    var isInsideCode = false
+    var foundSeparator = false
+
+    for character in trimmed {
+      if isEscaped {
+        current.append(character)
+        isEscaped = false
+      } else if character == "\\" {
+        current.append(character)
+        isEscaped = true
+      } else if character == "`" {
+        current.append(character)
+        isInsideCode.toggle()
+      } else if character == "|", !isInsideCode {
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        current = ""
+        foundSeparator = true
+      } else {
+        current.append(character)
+      }
+    }
+    cells.append(current.trimmingCharacters(in: .whitespaces))
+    guard foundSeparator else { return nil }
+
+    if trimmed.hasPrefix("|"), cells.first?.isEmpty == true { cells.removeFirst() }
+    if hasUnescapedTrailingPipe(trimmed), cells.last?.isEmpty == true { cells.removeLast() }
+    return cells
+  }
+
+  private static func hasUnescapedTrailingPipe(_ line: String) -> Bool {
+    guard line.last == "|" else { return false }
+    let slashCount = line.dropLast().reversed().prefix(while: { $0 == "\\" }).count
+    return slashCount.isMultiple(of: 2)
+  }
+
+  private static func tableAlignment(_ cell: String) -> MarkdownDocumentTableAlignment? {
+    var delimiter = cell.trimmingCharacters(in: .whitespaces)
+    let hasLeadingColon = delimiter.hasPrefix(":")
+    let hasTrailingColon = delimiter.hasSuffix(":")
+    if hasLeadingColon { delimiter.removeFirst() }
+    if hasTrailingColon, !delimiter.isEmpty { delimiter.removeLast() }
+    delimiter = delimiter.trimmingCharacters(in: .whitespaces)
+    guard delimiter.count >= 3, delimiter.allSatisfy({ $0 == "-" }) else { return nil }
+    if hasLeadingColon, hasTrailingColon { return .center }
+    if hasTrailingColon { return .trailing }
+    return .leading
+  }
+
+  private static func normalizedTableRow(_ cells: [String], columnCount: Int) -> [String] {
+    var normalized = Array(cells.prefix(columnCount))
+    normalized.append(contentsOf: repeatElement("", count: max(0, columnCount - normalized.count)))
+    return normalized
   }
 
   private static func heading(from line: String) -> MarkdownDocumentBlock? {

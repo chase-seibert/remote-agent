@@ -10,6 +10,7 @@
 - As a developer, I want to select and run Make targets plus a combined Git Commit & Push action from a conversation, so that build and publishing workflows execute on my Mac while I am using my phone.
 - As a developer, I want to open a project-command chat row and inspect the Mac's full output on a dismissible screen, so that command details remain available without cluttering the transcript.
 - As a developer, I want active turns to update automatically, so that I know when Codex has finished or failed.
+- As a developer sending a prompt, I want my blue message to appear before the green working state, so that the conversation reads in chronological order.
 - As a developer returning to an already-open conversation, I want newly delivered activity marked read immediately, so that its unread marker does not remain stale.
 - As a developer, I want to mark a session unread from the session list, so that I can return to work that still needs my attention.
 - As a developer, I want a session to open at its latest activity, so that I do not have to manually scroll through old messages.
@@ -18,7 +19,7 @@
 - As a mobile user, I want unsent text preserved per session, so that navigation or an interruption does not discard my draft.
 - As an iPad user, I want the interface to adapt to a wide layout, so that recent sessions and conversation context remain easy to navigate together.
 - As a developer, I want to open Markdown and HTML files from a project, so that I can conveniently reference project documentation from my phone.
-- As a developer, I want Markdown files rendered with document formatting, so that headings, emphasis, lists, quotes, and code are easy to scan.
+- As a developer, I want Markdown files rendered with document formatting, so that headings, emphasis, lists, quotes, code, and tables are easy to scan.
 - As a developer, I want source-code files omitted from Browse Files but previewable from conversation links with stable formatting and line numbers, so that documentation stays easy to browse while changed code remains inspectable.
 - As a developer, I want links in transcripts and project documents to open on my phone, including links written as Mac project paths, so that desktop-generated references remain useful on mobile.
 - As a developer, I want a notification when an agent turn finishes or fails, so that I do not need to keep watching the conversation.

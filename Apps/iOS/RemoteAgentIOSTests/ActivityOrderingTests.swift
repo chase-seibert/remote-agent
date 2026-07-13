@@ -312,6 +312,43 @@ final class UnreadBadgeTests: XCTestCase {
 
 @MainActor
 final class PromptQueueTests: XCTestCase {
+  func testOutgoingMessageAppearsBeforeWorkingState() async throws {
+    let session = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "Test",
+      createdAt: Date(),
+      updatedAt: Date(),
+      messages: [],
+      isRunning: false
+    )
+    let client = DeferredPromptAPIClient()
+    let suite = "PromptQueueTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+    let model = AppModel(
+      testConfiguration: APIConfiguration(host: "test.local", port: 8765, token: "token"),
+      client: client,
+      sessions: [session],
+      draftStore: DraftStore(defaults: defaults)
+    )
+
+    let sendTask = Task { await model.sendPrompt("Start the work", to: session.id) }
+    await client.waitUntilSendBegins()
+
+    XCTAssertEqual(model.selectedSession?.messages.last?.text, "Start the work")
+    XCTAssertEqual(model.selectedSession?.messages.last?.role, .user)
+    XCTAssertFalse(model.selectedSession?.isRunning ?? true)
+
+    await client.acceptSend()
+    let didSend = await sendTask.value
+
+    XCTAssertTrue(didSend)
+    XCTAssertTrue(model.selectedSession?.isRunning == true)
+  }
+
   func testPromptQueuesOnServerWhileSessionRuns() async throws {
     let context = makeContext(isRunning: true)
 
@@ -589,6 +626,54 @@ private actor PromptQueueAPIClient: RemoteAPIClientProtocol {
   }
 }
 
+private actor DeferredPromptAPIClient: RemoteAPIClientProtocol {
+  private var requestedSessionID: UUID?
+  private var continuation: CheckedContinuation<AcceptedResponse, Never>?
+
+  func sendMessage(_ text: String, sessionID: UUID) async throws -> AcceptedResponse {
+    requestedSessionID = sessionID
+    return await withCheckedContinuation { continuation = $0 }
+  }
+
+  func waitUntilSendBegins() async {
+    while requestedSessionID == nil { await Task.yield() }
+  }
+
+  func acceptSend() {
+    guard let requestedSessionID, let continuation else { return }
+    self.continuation = nil
+    continuation.resume(
+      returning: AcceptedResponse(sessionID: requestedSessionID, status: "accepted")
+    )
+  }
+
+  func health() async throws -> HealthResponse { throw RemoteAPIError.invalidData }
+  func projects() async throws -> [AgentProject] { throw RemoteAPIError.invalidData }
+  func sessions(projectID: String?) async throws -> [AgentSession] {
+    throw RemoteAPIError.invalidData
+  }
+  func session(id: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
+  func renameSession(id: UUID, title: String) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func setSessionPinned(id: UUID, isPinned: Bool) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func deleteSession(id: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
+  func markSessionRead(id: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
+  func documents(projectID: String) async throws -> [ProjectDocument] {
+    throw RemoteAPIError.invalidData
+  }
+  func documentContent(projectID: String, documentID: String) async throws
+    -> ProjectDocumentContent
+  {
+    throw RemoteAPIError.invalidData
+  }
+  func createSession(projectID: String) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+}
+
 final class ProjectLinkResolverTests: XCTestCase {
   private let projectPath = "/Users/example/projects/sample"
 
@@ -800,6 +885,32 @@ final class MarkdownDocumentParserTests: XCTestCase {
     XCTAssertEqual(
       MarkdownDocumentParser.parse("```\nprint(\"Hello\")"),
       [.code(language: nil, content: "print(\"Hello\")")]
+    )
+  }
+
+  func testParsesMarkdownTableWithAlignmentAndMissingCells() {
+    let markdown = """
+      # Team Review
+
+      Team | Capacity usage | Readout
+      :--- | :---: | ---:
+      Expansion | 99.39% | Monthly \\| weekly
+      Formation | 69.19%
+      """
+
+    XCTAssertEqual(
+      MarkdownDocumentParser.parse(markdown),
+      [
+        .heading(level: 1, content: "Team Review"),
+        .table(
+          headers: ["Team", "Capacity usage", "Readout"],
+          alignments: [.leading, .center, .trailing],
+          rows: [
+            ["Expansion", "99.39%", "Monthly \\| weekly"],
+            ["Formation", "69.19%", ""],
+          ]
+        ),
+      ]
     )
   }
 }
