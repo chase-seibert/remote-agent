@@ -74,6 +74,37 @@ struct MobileActivityLogView: View {
         }
       }
 
+      GroupBox {
+        if let port = model.apiListeningPort, !model.apiListenerAddresses.isEmpty {
+          ScrollView {
+            LazyVStack(spacing: 0) {
+              ForEach(model.apiListenerAddresses) { address in
+                listenerAddressRow(address, port: port)
+                if address.id != model.apiListenerAddresses.last?.id {
+                  Divider()
+                }
+              }
+            }
+          }
+          .frame(maxHeight: 130)
+        } else {
+          Text(
+            model.apiListeningPort == nil
+              ? "The local API is not currently listening."
+              : "No active network-interface addresses were found."
+          )
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      } label: {
+        HStack {
+          Label("Listening Addresses", systemImage: "network")
+          Spacer()
+          Button("Refresh") { model.refreshAPIListenerAddresses() }
+            .controlSize(.small)
+        }
+      }
+
       HStack {
         Text("Request Log")
           .font(.headline)
@@ -125,6 +156,13 @@ struct MobileActivityLogView: View {
         }
         .width(55)
 
+        TableColumn("Payload") { entry in
+          Text(payloadSize(entry.responsePayloadByteCount))
+            .monospacedDigit()
+            .help(payloadSizeHelp(entry.responsePayloadByteCount))
+        }
+        .width(min: 65, ideal: 75)
+
         TableColumn("Time") { entry in
           Text("\(entry.durationMilliseconds) ms")
             .monospacedDigit()
@@ -142,18 +180,66 @@ struct MobileActivityLogView: View {
       }
 
       Text(
-        "Stores the 500 most recent HTTP requests. Request bodies and authorization tokens are never logged. Remote means a non-loopback source address."
+        "Stores the 500 most recent HTTP requests and logical response payload sizes. Request bodies and authorization tokens are never logged. Remote means a non-loopback source address."
       )
       .font(.caption)
       .foregroundStyle(.secondary)
     }
     .padding()
+    .onAppear { model.refreshAPIListenerAddresses() }
     .confirmationDialog(
       "Clear all API activity?",
       isPresented: $showingClearConfirmation
     ) {
       Button("Clear Log", role: .destructive) { model.clearAPIActivityLog() }
       Button("Cancel", role: .cancel) {}
+    }
+  }
+
+  @ViewBuilder
+  private func listenerAddressRow(_ address: APIListenerAddress, port: UInt16) -> some View {
+    HStack(spacing: 10) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(address.endpoint(port: port))
+          .font(.system(.body, design: .monospaced))
+          .textSelection(.enabled)
+        Text("\(address.interfaceName) · \(address.family.rawValue)")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      Spacer()
+      healthTestStatus(model.apiHealthTestStates[address.id])
+      Button("Test") {
+        Task { await model.testAPIListenerAddress(address) }
+      }
+      .disabled(model.apiHealthTestStates[address.id]?.isTesting == true)
+    }
+    .padding(.vertical, 6)
+  }
+
+  @ViewBuilder
+  private func healthTestStatus(_ state: APIHealthTestState?) -> some View {
+    switch state {
+    case .testing:
+      HStack(spacing: 5) {
+        ProgressView().controlSize(.small)
+        Text("Testing…")
+      }
+      .foregroundStyle(.secondary)
+    case .succeeded(let success):
+      Label(
+        "OK · v\(success.version) · \(success.durationMilliseconds) ms",
+        systemImage: "checkmark.circle.fill"
+      )
+      .foregroundStyle(.green)
+    case .failed(let message):
+      Label("Failed · \(message)", systemImage: "xmark.circle.fill")
+        .foregroundStyle(.red)
+        .lineLimit(1)
+        .frame(maxWidth: 260, alignment: .trailing)
+        .help(message)
+    case nil:
+      EmptyView()
     }
   }
 
@@ -165,12 +251,23 @@ struct MobileActivityLogView: View {
     }
   }
 
+  private func payloadSize(_ byteCount: Int?) -> String {
+    guard let byteCount else { return "—" }
+    return ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+  }
+
+  private func payloadSizeHelp(_ byteCount: Int?) -> String {
+    guard let byteCount else { return "Payload size was not recorded for this older entry." }
+    return "\(byteCount.formatted()) response body bytes before transport compression."
+  }
+
   private func copyLog() {
     let text = newestFirst.map { entry in
       let timestamp = entry.timestamp.formatted(.iso8601)
       let source = entry.isRemoteClient ? "remote" : "local"
+      let payload = entry.responsePayloadByteCount.map { "\($0)B" } ?? "unknown"
       return
-        "\(timestamp)\t\(source)\t\(entry.remoteHost)\t\(entry.clientName)\t\(entry.method) \(entry.path)\t\(entry.statusCode)\t\(entry.durationMilliseconds)ms"
+        "\(timestamp)\t\(source)\t\(entry.remoteHost)\t\(entry.clientName)\t\(entry.method) \(entry.path)\t\(entry.statusCode)\t\(payload)\t\(entry.durationMilliseconds)ms"
     }.joined(separator: "\n")
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)

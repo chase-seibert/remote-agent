@@ -1,6 +1,7 @@
 # Product Requirements
 
 - As a developer away from my desk, I want to connect my iPhone to Remote Agent on my Mac, so that I can use the Codex sessions in my local projects.
+- As a developer returning after a transient Wi-Fi or app-lifecycle interruption, I want the app to reconnect without a force quit, so that I can resume work immediately.
 - As a developer, I want one activity-ordered list of recent sessions across every project, so that I can resume the right context without navigating through projects first.
 - As a developer, I want to create a session from either the global list or an existing conversation, so that I can start work without returning to the Mac or backing out of my current project.
 - As a developer, I want to rename a session, so that its title stays useful as the work changes.
@@ -10,6 +11,7 @@
 - As a developer, I want to select and run Make targets plus a combined Git Commit & Push action from a conversation, so that build and publishing workflows execute on my Mac while I am using my phone.
 - As a developer, I want to open a project-command chat row and inspect the Mac's full output on a dismissible screen, so that command details remain available without cluttering the transcript.
 - As a developer, I want active turns to update automatically, so that I know when Codex has finished or failed.
+- As a developer with long session histories, I want active updates to avoid retransmitting unchanged transcripts every second, so that mobile polling remains responsive and bandwidth-efficient without sacrificing snapshot recovery.
 - As a developer sending a prompt, I want my blue message to appear before the green working state, so that the conversation reads in chronological order.
 - As a developer returning to an already-open conversation, I want newly delivered activity marked read immediately, so that its unread marker does not remain stale.
 - As a developer, I want to mark a session unread from the session list, so that I can return to work that still needs my attention.
@@ -18,11 +20,11 @@
 - As a security-conscious user, I want the bearer token kept in Keychain and excluded from diagnostics, so that credentials are not persisted in ordinary preferences.
 - As a mobile user, I want unsent text preserved per session, so that navigation or an interruption does not discard my draft.
 - As an iPad user, I want the interface to adapt to a wide layout, so that recent sessions and conversation context remain easy to navigate together.
-- As a developer, I want to open Markdown and HTML files from a project, so that I can conveniently reference project documentation from my phone.
+- As a developer, I want to open Markdown and HTML files from a project list that defaults to newest first, can be manually sorted by recency, name, or size, and previews files up to 10 MB, so that I can conveniently reference current project documentation from my phone.
 - As a developer, I want Markdown files rendered with document formatting, so that headings, emphasis, lists, quotes, code, and tables are easy to scan.
 - As a developer, I want source-code files omitted from Browse Files but previewable from conversation links with stable formatting and line numbers, so that documentation stays easy to browse while changed code remains inspectable.
 - As a developer, I want links in transcripts and project documents to open on my phone, including links written as Mac project paths, so that desktop-generated references remain useful on mobile.
-- As a developer, I want a notification when an agent turn finishes or fails, so that I do not need to keep watching the conversation.
+- As a developer, I want a notification that identifies the project and session and previews the outcome when an agent turn finishes or fails, so that I can understand what happened without reopening the app immediately.
 - As a developer, I want the app to opportunistically check active sessions while suspended and stop checking when they become idle, so that long-running local tasks can eventually produce a completion notification without continuous background activity.
 - As a developer, I want the iOS app icon badge to show my unread-session count, so that pending agent updates are visible outside the app.
 

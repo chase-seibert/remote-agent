@@ -59,6 +59,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   var isPinned: Bool
   var selectedMakeTarget: String?
   var queuedPrompts: [QueuedPrompt]
+  var contentRevision: UInt64
 
   init(
     id: UUID,
@@ -74,7 +75,8 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     isUnread: Bool = false,
     isPinned: Bool = false,
     selectedMakeTarget: String? = nil,
-    queuedPrompts: [QueuedPrompt] = []
+    queuedPrompts: [QueuedPrompt] = [],
+    contentRevision: UInt64 = 0
   ) {
     self.id = id
     self.projectID = projectID
@@ -90,6 +92,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     self.isPinned = isPinned
     self.selectedMakeTarget = selectedMakeTarget
     self.queuedPrompts = queuedPrompts
+    self.contentRevision = contentRevision
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -107,6 +110,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case isPinned
     case selectedMakeTarget
     case queuedPrompts
+    case contentRevision
   }
 
   init(from decoder: Decoder) throws {
@@ -125,6 +129,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
     selectedMakeTarget = try container.decodeIfPresent(String.self, forKey: .selectedMakeTarget)
     queuedPrompts = try container.decodeIfPresent([QueuedPrompt].self, forKey: .queuedPrompts) ?? []
+    contentRevision = try container.decodeIfPresent(UInt64.self, forKey: .contentRevision) ?? 0
   }
 
   var hasPendingProjectCommand: Bool {
@@ -185,6 +190,7 @@ struct ProjectDocument: Identifiable, Codable, Hashable, Sendable {
   let relativePath: String
   let kind: ProjectDocumentKind
   let byteCount: Int
+  let modifiedAt: Date?
 }
 
 struct ProjectDocumentContent: Codable, Hashable, Sendable {
@@ -192,9 +198,68 @@ struct ProjectDocumentContent: Codable, Hashable, Sendable {
   let content: String
 }
 
+enum ProjectDocumentSortOption: String, CaseIterable, Identifiable {
+  case mostRecent
+  case name
+  case size
+
+  var id: Self { self }
+
+  var title: String {
+    switch self {
+    case .mostRecent: "Most Recent"
+    case .name: "Name"
+    case .size: "Size"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .mostRecent: "clock"
+    case .name: "textformat"
+    case .size: "internaldrive"
+    }
+  }
+}
+
 extension Array where Element == ProjectDocument {
   var browsable: [ProjectDocument] {
-    filter { $0.kind.isBrowsable }
+    browsable(sortedBy: .mostRecent)
+  }
+
+  func browsable(sortedBy option: ProjectDocumentSortOption) -> [ProjectDocument] {
+    filter { $0.kind.isBrowsable }.sorted { left, right in
+      switch option {
+      case .mostRecent:
+        if let result = modificationDateOrder(left: left, right: right) {
+          return result
+        }
+      case .name:
+        let order = left.name.localizedCaseInsensitiveCompare(right.name)
+        if order != .orderedSame {
+          return order == .orderedAscending
+        }
+      case .size:
+        if left.byteCount != right.byteCount {
+          return left.byteCount > right.byteCount
+        }
+      }
+      return left.relativePath.localizedCaseInsensitiveCompare(right.relativePath)
+        == .orderedAscending
+    }
+  }
+
+  private func modificationDateOrder(left: ProjectDocument, right: ProjectDocument) -> Bool? {
+    switch (left.modifiedAt, right.modifiedAt) {
+    case (let leftDate?, let rightDate?) where leftDate != rightDate:
+      return leftDate > rightDate
+    case (_?, nil):
+      return true
+    case (nil, _?):
+      return false
+    default:
+      return nil
+    }
   }
 }
 

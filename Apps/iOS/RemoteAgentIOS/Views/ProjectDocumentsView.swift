@@ -8,6 +8,12 @@ struct ProjectDocumentsView: View {
   @State private var documents: [ProjectDocument] = []
   @State private var isLoading = true
   @State private var loadError: String?
+  @AppStorage("projectDocumentSortOption") private var sortOption =
+    ProjectDocumentSortOption.mostRecent
+
+  private var visibleDocuments: [ProjectDocument] {
+    documents.browsable(sortedBy: sortOption)
+  }
 
   var body: some View {
     NavigationStack {
@@ -22,14 +28,14 @@ struct ProjectDocumentsView: View {
           } actions: {
             Button("Try Again") { Task { await load() } }
           }
-        } else if documents.isEmpty {
+        } else if visibleDocuments.isEmpty {
           ContentUnavailableView(
             "No Documents",
             systemImage: "doc",
             description: Text("This project has no Markdown or HTML files.")
           )
         } else {
-          List(documents) { document in
+          List(visibleDocuments) { document in
             NavigationLink(value: document) {
               ProjectDocumentRow(document: document)
             }
@@ -50,6 +56,9 @@ struct ProjectDocumentsView: View {
         ToolbarItem(placement: .cancellationAction) {
           Button("Done") { dismiss() }
         }
+        ToolbarItem(placement: .primaryAction) {
+          ProjectDocumentSortMenu(selection: $sortOption)
+        }
       }
       .task { await load() }
     }
@@ -59,11 +68,29 @@ struct ProjectDocumentsView: View {
     isLoading = true
     loadError = nil
     do {
-      documents = try await model.documents(projectID: project.id).browsable
+      documents = try await model.documents(projectID: project.id)
     } catch {
       loadError = error.localizedDescription
     }
     isLoading = false
+  }
+}
+
+private struct ProjectDocumentSortMenu: View {
+  @Binding var selection: ProjectDocumentSortOption
+
+  var body: some View {
+    Menu {
+      Picker("Sort By", selection: $selection) {
+        ForEach(ProjectDocumentSortOption.allCases) { option in
+          Label(option.title, systemImage: option.systemImage)
+            .tag(option)
+        }
+      }
+    } label: {
+      Label("Sort Files", systemImage: "arrow.up.arrow.down")
+    }
+    .accessibilityIdentifier("document-sort-menu")
   }
 }
 
@@ -115,42 +142,53 @@ private struct ProjectDocumentRow: View {
 
 #if DEBUG
   struct ProjectDocumentBrowserFixtureView: View {
+    @State private var sortOption = ProjectDocumentSortOption.mostRecent
+
     private let catalog = [
       ProjectDocument(
         id: "readme",
         name: "README.md",
         relativePath: "README.md",
         kind: .markdown,
-        byteCount: 2_048
+        byteCount: 2_048,
+        modifiedAt: Date(timeIntervalSince1970: 100)
       ),
       ProjectDocument(
         id: "report",
         name: "status.html",
         relativePath: "docs/status.html",
         kind: .html,
-        byteCount: 4_096
+        byteCount: 4_096,
+        modifiedAt: Date(timeIntervalSince1970: 400)
       ),
       ProjectDocument(
         id: "swift",
         name: "App.swift",
         relativePath: "Sources/App.swift",
         kind: .code,
-        byteCount: 8_192
+        byteCount: 8_192,
+        modifiedAt: Date(timeIntervalSince1970: 300)
       ),
       ProjectDocument(
         id: "json",
         name: "package.json",
         relativePath: "package.json",
         kind: .code,
-        byteCount: 1_024
+        byteCount: 1_024,
+        modifiedAt: Date(timeIntervalSince1970: 200)
       ),
     ]
 
     var body: some View {
-      List(catalog.browsable) { document in
+      List(catalog.browsable(sortedBy: sortOption)) { document in
         ProjectDocumentRow(document: document)
       }
       .navigationTitle("Browse Files")
+      .toolbar {
+        ToolbarItem(placement: .primaryAction) {
+          ProjectDocumentSortMenu(selection: $sortOption)
+        }
+      }
     }
   }
 #endif

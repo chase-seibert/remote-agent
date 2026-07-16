@@ -1,8 +1,13 @@
+import Darwin
 import Foundation
 import RemoteAgentProtocol
 import Testing
 
 @testable import RemoteAgent
+
+#if canImport(FoundationModels)
+  import FoundationModels
+#endif
 
 private struct FixedCommitMessageGenerator: CommitMessageGenerating {
   let message: String
@@ -123,6 +128,13 @@ struct RemoteAgentTests {
     #expect(truncatedMessage.hasSuffix("word"))
   }
 
+  #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    @Test func commitMessageGenerationDoesNotTruncateModelOutput() {
+      #expect(FoundationCommitMessageGenerator.generationOptions.maximumResponseTokens == nil)
+    }
+  #endif
+
   @Test func commitMessageContextPrefersHighSignalIntent() {
     let result = CommitMessageContext.prioritizedDiff(
       highSignalDiff: "  Enable completion notifications for background sessions.  ",
@@ -175,6 +187,7 @@ struct RemoteAgentTests {
     session.messages.append(AgentMessage(role: .user, text: "Hello"))
     session.isPinned = true
     session.queuedPrompts = [QueuedPrompt(text: "Follow up")]
+    session.recordContentChange()
 
     try await store.save([session])
     let loaded = try await store.load()
@@ -183,6 +196,7 @@ struct RemoteAgentTests {
     #expect(loaded.first?.messages.first?.text == "Hello")
     #expect(loaded.first?.isPinned == true)
     #expect(loaded.first?.queuedPrompts.map(\.text) == ["Follow up"])
+    #expect(loaded.first?.contentRevision == 1)
   }
 
   @Test func sessionStoreDoesNotPersistCurrentReasoning() async throws {
@@ -238,6 +252,79 @@ struct RemoteAgentTests {
     )
 
     #expect(object["currentReasoning"] as? String == "Checking the API response.")
+  }
+
+  @MainActor
+  @Test func sessionStatusEndpointAvoidsTranscriptPayloadAndAdvancesRevision() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let projectDirectory = directory.appendingPathComponent("Example", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+      at: projectDirectory,
+      withIntermediateDirectories: true
+    )
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let settings = AppSettings(defaults: defaults)
+    settings.projectsRoot = directory.path
+    settings.apiToken = "test-token"
+    let codex = ControllableCodexSender()
+    let model = AppModel(
+      settings: settings,
+      store: SessionStore(fileURL: directory.appendingPathComponent("sessions.json")),
+      activityStore: APIActivityStore(fileURL: directory.appendingPathComponent("activity.json")),
+      codex: codex
+    )
+    await model.refreshProjects()
+    let project = try #require(model.projects.first)
+    let session = try #require(model.createSession(projectID: project.id, select: false))
+    let prompt = String(repeating: "Inspect the complete transcript carefully. ", count: 500)
+    let turn = Task { await model.sendPrompt(prompt, to: session.id) }
+    for _ in 0..<100 {
+      if await codex.prompts.count == 1 { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+
+    let runningResponse = await model.handleAPI(
+      try apiRequest(
+        method: "GET",
+        path: RemoteAgentEndpoint.sessionStatus,
+        query: ["ids": session.id.uuidString],
+        token: settings.apiToken
+      ))
+    let runningStatuses = try decodeAPI([SessionStatusSnapshot].self, from: runningResponse)
+    let runningStatus = try #require(runningStatuses.first)
+    let fullResponse = await model.handleAPI(
+      try apiRequest(method: "GET", path: RemoteAgentEndpoint.sessions, token: settings.apiToken)
+    )
+
+    #expect(runningResponse.status == 200)
+    #expect(runningStatuses.count == 1)
+    #expect(runningStatus.id == session.id)
+    #expect(runningStatus.isRunning)
+    #expect(runningStatus.messageCount == 1)
+    #expect(runningStatus.contentRevision > session.contentRevision)
+    #expect(runningResponse.body.count < 1_024)
+    #expect(runningResponse.body.count * 10 < fullResponse.body.count)
+
+    await codex.releaseFirstPrompt()
+    await turn.value
+
+    let completedResponse = await model.handleAPI(
+      try apiRequest(
+        method: "GET",
+        path: RemoteAgentEndpoint.sessionStatus,
+        query: ["ids": session.id.uuidString],
+        token: settings.apiToken
+      ))
+    let completedStatus = try #require(
+      try decodeAPI([SessionStatusSnapshot].self, from: completedResponse).first
+    )
+    #expect(!completedStatus.isRunning)
+    #expect(completedStatus.messageCount == 2)
+    #expect(completedStatus.contentRevision > runningStatus.contentRevision)
   }
 
   @Test func markdownParserPreservesBlockStructure() {
@@ -395,6 +482,7 @@ struct RemoteAgentTests {
     var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
     object.removeValue(forKey: "isUnread")
     object.removeValue(forKey: "isPinned")
+    object.removeValue(forKey: "contentRevision")
 
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
@@ -405,6 +493,7 @@ struct RemoteAgentTests {
 
     #expect(!decoded.isUnread)
     #expect(!decoded.isPinned)
+    #expect(decoded.contentRevision == 0)
   }
 
   @MainActor
@@ -1085,6 +1174,7 @@ struct RemoteAgentTests {
       method: "GET",
       path: "/v1/projects",
       statusCode: 200,
+      responsePayloadByteCount: 4_096,
       durationMilliseconds: 12,
       isRemoteClient: true
     )
@@ -1093,6 +1183,25 @@ struct RemoteAgentTests {
     let loaded = try await store.load()
 
     #expect(loaded == [entry])
+    #expect(loaded.first?.responsePayloadByteCount == 4_096)
+  }
+
+  @Test func apiActivityStoreLoadsEntriesWithoutPayloadSize() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fileURL = directory.appendingPathComponent("activity.json")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data(
+      """
+      [{"id":"00000000-0000-0000-0000-000000000001","timestamp":"1970-01-01T00:01:40Z","remoteHost":"127.0.0.1","clientName":"Legacy","method":"GET","path":"/v1/health","statusCode":200,"durationMilliseconds":1,"isRemoteClient":false}]
+      """.utf8
+    ).write(to: fileURL)
+
+    let loaded = try await APIActivityStore(fileURL: fileURL).load()
+
+    #expect(loaded.count == 1)
+    #expect(loaded.first?.responsePayloadByteCount == nil)
   }
 
   @Test func projectDocumentsAreRestrictedAndReadable() async throws {
@@ -1100,9 +1209,21 @@ struct RemoteAgentTests {
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data("# Read me".utf8).write(to: directory.appendingPathComponent("README.md"))
-    try Data("<h1>Hello</h1>".utf8).write(to: directory.appendingPathComponent("index.html"))
-    try Data("let answer = 42".utf8).write(to: directory.appendingPathComponent("Source.swift"))
+    let readmeURL = directory.appendingPathComponent("README.md")
+    let htmlURL = directory.appendingPathComponent("index.html")
+    let sourceURL = directory.appendingPathComponent("Source.swift")
+    try Data("# Read me".utf8).write(to: readmeURL)
+    try Data("<h1>Hello</h1>".utf8).write(to: htmlURL)
+    try Data("let answer = 42".utf8).write(to: sourceURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 200)],
+      ofItemAtPath: readmeURL.path)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 100)],
+      ofItemAtPath: htmlURL.path)
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSince1970: 300)],
+      ofItemAtPath: sourceURL.path)
     try Data("ignored".utf8).write(to: directory.appendingPathComponent("notes.txt"))
     let buildDirectory = directory.appendingPathComponent("build", isDirectory: true)
     try FileManager.default.createDirectory(at: buildDirectory, withIntermediateDirectories: true)
@@ -1111,13 +1232,31 @@ struct RemoteAgentTests {
     let service = ProjectDocumentService()
     let documents = try await service.list(projectPath: directory.path)
 
-    #expect(documents.map(\.relativePath) == ["index.html", "README.md", "Source.swift"])
+    #expect(documents.map(\.relativePath) == ["Source.swift", "README.md", "index.html"])
+    #expect(documents.allSatisfy { $0.modifiedAt != nil })
     let markdown = try #require(documents.first(where: { $0.kind == .markdown }))
     let content = try await service.content(projectPath: directory.path, documentID: markdown.id)
     #expect(content.content == "# Read me")
     let code = try #require(documents.first(where: { $0.kind == .code }))
     let codeContent = try await service.content(projectPath: directory.path, documentID: code.id)
     #expect(codeContent.content == "let answer = 42")
+  }
+
+  @Test func projectDocumentsPermitContentAboveLegacyTwoMegabyteLimit() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let byteCount = 3 * 1_024 * 1_024
+    try Data(repeating: 97, count: byteCount)
+      .write(to: directory.appendingPathComponent("large.md"))
+
+    let service = ProjectDocumentService()
+    let document = try #require(await service.list(projectPath: directory.path).first)
+    let content = try await service.content(projectPath: directory.path, documentID: document.id)
+
+    #expect(ProjectDocumentService.maximumByteCount == 10 * 1_024 * 1_024)
+    #expect(content.content.utf8.count == byteCount)
   }
 
   @Test func localLinkResolverHandlesAbsoluteAndRelativeDocuments() throws {
@@ -1147,6 +1286,76 @@ struct RemoteAgentTests {
 
     #expect(LocalLinkResolver.fileURL(for: web, relativeTo: base) == nil)
     #expect(LocalLinkResolver.document(for: web, relativeTo: base) == nil)
+  }
+
+  @Test func apiListenerAddressesFormatIPv4AndIPv6HealthURLs() throws {
+    let ipv4 = APIListenerAddress(
+      interfaceName: "en0",
+      address: "192.168.1.20",
+      family: .ipv4,
+      isLoopback: false
+    )
+    let ipv6 = APIListenerAddress(
+      interfaceName: "lo0",
+      address: "::1",
+      family: .ipv6,
+      isLoopback: true
+    )
+
+    #expect(ipv4.endpoint(port: 8765) == "192.168.1.20:8765")
+    #expect(ipv4.healthURL(port: 8765)?.absoluteString == "http://192.168.1.20:8765/v1/health")
+    #expect(ipv6.endpoint(port: 8765) == "[::1]:8765")
+    #expect(ipv6.healthURL(port: 8765)?.absoluteString == "http://[::1]:8765/v1/health")
+  }
+
+  @Test func apiListenerAddressResolverIncludesActiveLoopbackInterface() {
+    let addresses = APIListenerAddressResolver.activeAddresses()
+
+    #expect(
+      addresses.contains {
+        $0.interfaceName == "lo0" && $0.address == "127.0.0.1" && $0.family == .ipv4
+      })
+    #expect(Set(addresses).count == addresses.count)
+  }
+
+  @Test func apiHealthProbeUsesAuthenticatedHealthEndpoint() async throws {
+    let token = "diagnostic-token"
+    let server = RemoteAPIServer(advertisesBonjour: false) { request in
+      guard request.path == RemoteAgentEndpoint.health,
+        request.headers["authorization"] == "Bearer \(token)"
+      else {
+        return HTTPResponse(status: 401)
+      }
+      return HTTPResponse(
+        status: 200,
+        body: Data(#"{"status":"ok","version":"test-version"}"#.utf8)
+      )
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer { server.stop() }
+    let port = try await waitForBoundPort(server)
+    let loopback = APIListenerAddress(
+      interfaceName: "lo0",
+      address: "127.0.0.1",
+      family: .ipv4,
+      isLoopback: true
+    )
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.timeoutIntervalForRequest = 2
+    configuration.timeoutIntervalForResource = 3
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+
+    let success = try await APIHealthProbe.test(
+      address: loopback,
+      port: port,
+      bearerToken: token,
+      session: session
+    )
+
+    #expect(success.version == "test-version")
+    #expect(success.durationMilliseconds >= 0)
   }
 
   @Test func httpParserAcceptsDuplicateQueryItemsWithoutCrashing() throws {
@@ -1191,6 +1400,416 @@ struct RemoteAgentTests {
     }
   }
 
+  @Test func httpParserParsesHeadersOnceAcrossIncrementalBodyChunks() throws {
+    var parser = HTTPRequestParser()
+    let header = Data("POST /v1/sessions HTTP/1.1\r\nContent-Length: 5\r\n\r\n".utf8)
+
+    for byte in header {
+      switch parser.append(Data([byte]), remoteHost: "test") {
+      case .incomplete: break
+      default: Issue.record("Expected incremental headers to remain incomplete")
+      }
+    }
+    #expect(parser.isWaitingForBody)
+    switch parser.append(Data("12".utf8), remoteHost: "test") {
+    case .incomplete: break
+    default: Issue.record("Expected an incomplete body")
+    }
+    switch parser.append(Data("345".utf8), remoteHost: "test") {
+    case .request(let request): #expect(request.body == Data("12345".utf8))
+    default: Issue.record("Expected the completed incremental request")
+    }
+  }
+
+  @Test func apiServerDeliversConcurrentAsyncResponsesAndReleasesConnections() async throws {
+    let server = RemoteAPIServer(
+      advertisesBonjour: false,
+      configuration: RemoteAPIServerConfiguration(
+        maximumConnections: 128,
+        maximumConnectionsPerHost: 128
+      )
+    ) { request in
+      await Task.yield()
+      return HTTPResponse(
+        status: 200,
+        body: Data(request.path.utf8),
+        contentType: "text/plain"
+      )
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer { server.stop() }
+
+    let port = try await waitForBoundPort(server)
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.timeoutIntervalForRequest = 3
+    configuration.timeoutIntervalForResource = 5
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      for index in 0..<80 {
+        group.addTask {
+          let expectedPath = "/request/\(index)"
+          let url = try #require(URL(string: "http://127.0.0.1:\(port)\(expectedPath)"))
+          let (data, response) = try await session.data(from: url)
+          guard let response = response as? HTTPURLResponse,
+            response.statusCode == 200,
+            data == Data(expectedPath.utf8)
+          else { throw RemoteAgentTestFailure.unexpectedResponse }
+        }
+      }
+      try await group.waitForAll()
+    }
+
+    try await waitForConnectionCount(server, equalTo: 0)
+  }
+
+  @Test func apiServerTimesOutSlowHeadersAndStalledBodies() async throws {
+    let server = RemoteAPIServer(
+      advertisesBonjour: false,
+      configuration: RemoteAPIServerConfiguration(
+        headerTimeout: 0.05,
+        bodyIdleTimeout: 0.05,
+        bodyTimeout: 0.2,
+        responseWriteTimeout: 0.2
+      )
+    ) { _ in
+      HTTPResponse(status: 200, body: Data("unexpected".utf8), contentType: "text/plain")
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer { server.stop() }
+    let port = try await waitForBoundPort(server)
+
+    let headerSocket = try openRawSocket(port: port)
+    try writeRawRequest("GET /v1/health HTTP/1.1\r\nHost: test\r\n", to: headerSocket)
+    let headerResponse = try readRawResponse(from: headerSocket)
+    Darwin.close(headerSocket)
+    #expect(headerResponse.contains("408 Request Timeout"))
+    #expect(headerResponse.contains("Request headers timed out"))
+
+    let bodySocket = try openRawSocket(port: port)
+    try writeRawRequest(
+      "POST /v1/sessions HTTP/1.1\r\nHost: test\r\nContent-Length: 5\r\n\r\n1",
+      to: bodySocket
+    )
+    let bodyResponse = try readRawResponse(from: bodySocket)
+    Darwin.close(bodySocket)
+    #expect(bodyResponse.contains("408 Request Timeout"))
+    #expect(bodyResponse.contains("Request body stalled"))
+    try await waitForConnectionCount(server, equalTo: 0)
+  }
+
+  @Test func apiServerReleasesAClientThatDoesNotReadTheResponse() async throws {
+    let handler = ServerHandlerCompletion()
+    let server = RemoteAPIServer(
+      advertisesBonjour: false,
+      configuration: RemoteAPIServerConfiguration(responseWriteTimeout: 0.05)
+    ) { _ in
+      await handler.markFinished()
+      return HTTPResponse(
+        status: 200,
+        body: Data(repeating: 97, count: 16 * 1_024 * 1_024),
+        contentType: "application/octet-stream"
+      )
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer { server.stop() }
+    let port = try await waitForBoundPort(server)
+
+    let socket = try openRawSocket(port: port)
+    defer { Darwin.close(socket) }
+    try writeRawRequest("GET /large HTTP/1.1\r\nHost: test\r\n\r\n", to: socket)
+    await handler.waitUntilFinished()
+
+    try await waitForConnectionCount(server, equalTo: 0)
+  }
+
+  @Test func apiServerDrainsLargeResponseBeforeClosingSlowClient() async throws {
+    let payload = Data(repeating: 97, count: 4 * 1_024 * 1_024)
+    let handler = ServerHandlerCompletion()
+    let server = RemoteAPIServer(
+      advertisesBonjour: false,
+      configuration: RemoteAPIServerConfiguration(responseWriteTimeout: 5)
+    ) { _ in
+      await handler.markFinished()
+      return HTTPResponse(
+        status: 200,
+        body: payload,
+        contentType: "application/octet-stream"
+      )
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer { server.stop() }
+    let port = try await waitForBoundPort(server)
+
+    let socket = try openRawSocket(port: port, receiveBufferSize: 4_096)
+    try writeRawRequest("GET /large HTTP/1.1\r\nHost: test\r\n\r\n", to: socket)
+    await handler.waitUntilFinished()
+    try await Task.sleep(for: .milliseconds(100))
+
+    let response = try await Task.detached { try readRawResponseData(from: socket) }.value
+    Darwin.close(socket)
+    let separator = Data("\r\n\r\n".utf8)
+    let headerRange = try #require(response.range(of: separator))
+    let headers = String(decoding: response[..<headerRange.lowerBound], as: UTF8.self)
+    #expect(headers.contains("HTTP/1.1 200 OK"))
+    #expect(headers.contains("Content-Length: \(payload.count)"))
+    #expect(response[headerRange.upperBound...] == payload)
+    try await waitForConnectionCount(server, equalTo: 0)
+  }
+
+  @Test func apiServerCompressesNegotiatedLargeResponseForURLSession() async throws {
+    let payload = Data(repeating: 97, count: 512 * 1_024)
+    let server = RemoteAPIServer(advertisesBonjour: false) { _ in
+      HTTPResponse(
+        status: 200,
+        body: payload,
+        contentType: "application/octet-stream"
+      )
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer { server.stop() }
+    let port = try await waitForBoundPort(server)
+
+    let url = try #require(URL(string: "http://127.0.0.1:\(port)/large"))
+    var request = URLRequest(url: url)
+    request.setValue("deflate", forHTTPHeaderField: "Accept-Encoding")
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.timeoutIntervalForRequest = 3
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+
+    let (data, response) = try await session.data(for: request)
+    #expect((response as? HTTPURLResponse)?.statusCode == 200)
+    #expect(
+      (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Encoding") == "deflate")
+    #expect(data == payload)
+    try await waitForConnectionCount(server, equalTo: 0)
+  }
+
+  @Test func apiServerReservesCapacityForHealthAndSessionStatusRequests() async throws {
+    let gate = ServerHandlerGate()
+    let server = RemoteAPIServer(
+      advertisesBonjour: false,
+      configuration: RemoteAPIServerConfiguration(
+        maximumConnections: 3,
+        priorityConnectionReserve: 2,
+        maximumConnectionsPerHost: 3,
+        priorityConnectionReservePerHost: 2,
+        handlerTimeout: 5
+      )
+    ) { request in
+      if request.path == "/slow" { await gate.wait() }
+      return HTTPResponse(status: 200, body: Data(request.path.utf8), contentType: "text/plain")
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer {
+      Task { await gate.release() }
+      server.stop()
+    }
+
+    let port = try await waitForBoundPort(server)
+    let session = URLSession(configuration: .ephemeral)
+    defer { session.invalidateAndCancel() }
+    let slowURL = try #require(URL(string: "http://127.0.0.1:\(port)/slow"))
+    let slowRequest = Task { try await session.data(from: slowURL) }
+    await gate.waitUntilStarted()
+
+    let healthURL = try #require(URL(string: "http://127.0.0.1:\(port)/v1/health"))
+    let (healthData, healthResponse) = try await session.data(from: healthURL)
+    #expect((healthResponse as? HTTPURLResponse)?.statusCode == 200)
+    #expect(healthData == Data("/v1/health".utf8))
+    try await waitForConnectionCount(server, equalTo: 1)
+
+    let statusURL = try #require(
+      URL(
+        string:
+          "http://127.0.0.1:\(port)/v1/session-status?ids=AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+    )
+    let (statusData, statusResponse) = try await session.data(from: statusURL)
+    #expect((statusResponse as? HTTPURLResponse)?.statusCode == 200)
+    #expect(statusData == Data("/v1/session-status".utf8))
+    try await waitForConnectionCount(server, equalTo: 1)
+
+    let ordinaryURL = try #require(URL(string: "http://127.0.0.1:\(port)/ordinary"))
+    let (_, ordinaryResponse) = try await session.data(from: ordinaryURL)
+    #expect((ordinaryResponse as? HTTPURLResponse)?.statusCode == 503)
+    #expect((ordinaryResponse as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After") == "1")
+
+    slowRequest.cancel()
+    await gate.release()
+    _ = try? await slowRequest.value
+  }
+
+  @Test func apiHandlerDeadlineClosesResponseButLetsAcceptedWorkFinish() async throws {
+    let completion = ServerHandlerCompletion()
+    let server = RemoteAPIServer(
+      advertisesBonjour: false,
+      configuration: RemoteAPIServerConfiguration(
+        handlerTimeout: 0.05,
+        responseWriteTimeout: 0.2
+      )
+    ) { _ in
+      try? await Task.sleep(for: .milliseconds(150))
+      await completion.markFinished()
+      return HTTPResponse(status: 200, body: Data("finished".utf8), contentType: "text/plain")
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer { server.stop() }
+
+    let port = try await waitForBoundPort(server)
+    let url = try #require(URL(string: "http://127.0.0.1:\(port)/slow"))
+    let (data, response) = try await URLSession.shared.data(from: url)
+
+    #expect((response as? HTTPURLResponse)?.statusCode == 504)
+    #expect(String(decoding: data, as: UTF8.self).contains("still running"))
+    await completion.waitUntilFinished()
+    #expect(await completion.isFinished)
+  }
+
+  @Test func closingClientConnectionDoesNotCancelAcceptedHandlerWork() async throws {
+    let gate = ServerHandlerGate()
+    let completion = ServerHandlerCompletion()
+    let server = RemoteAPIServer(advertisesBonjour: false) { _ in
+      await gate.wait()
+      await completion.markFinished()
+      return HTTPResponse(status: 200, body: Data("finished".utf8), contentType: "text/plain")
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer {
+      Task { await gate.release() }
+      server.stop()
+    }
+
+    let port = try await waitForBoundPort(server)
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.timeoutIntervalForRequest = 1
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let url = try #require(URL(string: "http://127.0.0.1:\(port)/disconnect"))
+    let request = Task { try await session.data(from: url) }
+    await gate.waitUntilStarted()
+    request.cancel()
+    _ = try? await request.value
+
+    await gate.release()
+    await completion.waitUntilFinished()
+    #expect(await completion.isFinished)
+  }
+
+  @Test func disconnectedWorkStillConsumesBoundedHandlerCapacity() async throws {
+    let gate = ServerHandlerGate()
+    let server = RemoteAPIServer(
+      advertisesBonjour: false,
+      configuration: RemoteAPIServerConfiguration(
+        maximumHandlers: 2,
+        priorityHandlerReserve: 1,
+        maximumHandlersPerHost: 2,
+        priorityHandlerReservePerHost: 1,
+        handlerTimeout: 0.05,
+        responseWriteTimeout: 0.1
+      )
+    ) { request in
+      if request.path == "/slow" { await gate.wait() }
+      return HTTPResponse(status: 200, body: Data(request.path.utf8), contentType: "text/plain")
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer {
+      Task { await gate.release() }
+      server.stop()
+    }
+
+    let port = try await waitForBoundPort(server)
+    let session = URLSession(configuration: .ephemeral)
+    defer { session.invalidateAndCancel() }
+    let slowSocket = try openRawSocket(port: port)
+    try writeRawRequest("GET /slow HTTP/1.1\r\nHost: test\r\n\r\n", to: slowSocket)
+    await gate.waitUntilStarted()
+    Darwin.close(slowSocket)
+    try await waitForConnectionCount(server, equalTo: 0)
+
+    let ordinaryURL = try #require(URL(string: "http://127.0.0.1:\(port)/ordinary"))
+    let (_, ordinaryResponse) = try await session.data(from: ordinaryURL)
+    #expect((ordinaryResponse as? HTTPURLResponse)?.statusCode == 503)
+
+    let healthURL = try #require(URL(string: "http://127.0.0.1:\(port)/v1/health"))
+    let (healthData, healthResponse) = try await session.data(from: healthURL)
+    #expect((healthResponse as? HTTPURLResponse)?.statusCode == 200)
+    #expect(healthData == Data("/v1/health".utf8))
+
+    await gate.release()
+  }
+
+  @Test func stoppingAPIClosesActiveConnectionsAndAllowsImmediateRestart() async throws {
+    let server = RemoteAPIServer(advertisesBonjour: false) { request in
+      if request.path == "/slow" {
+        try? await Task.sleep(for: .milliseconds(500))
+      }
+      return HTTPResponse(status: 200, body: Data("ok".utf8), contentType: "text/plain")
+    } stateChanged: { _ in
+    }
+    try server.start(port: 0)
+    defer { server.stop() }
+
+    let initialPort = try await waitForBoundPort(server)
+    let session = URLSession(configuration: .ephemeral)
+    defer { session.invalidateAndCancel() }
+    let slowURL = try #require(URL(string: "http://127.0.0.1:\(initialPort)/slow"))
+    let slowRequest = Task { try await session.data(from: slowURL) }
+    try await waitForConnectionCount(server, equalTo: 1)
+
+    await server.stopAndWait()
+    #expect(server.activeConnectionCount == 0)
+    do {
+      _ = try await slowRequest.value
+      Issue.record("Expected stopping the listener to close the active request")
+    } catch {}
+
+    try await server.startAndWait(port: initialPort)
+    let restartedPort = try await waitForBoundPort(server)
+    #expect(restartedPort == initialPort)
+    let healthURL = try #require(URL(string: "http://127.0.0.1:\(restartedPort)/health"))
+    let (data, response) = try await session.data(from: healthURL)
+    #expect((response as? HTTPURLResponse)?.statusCode == 200)
+    #expect(data == Data("ok".utf8))
+  }
+
+  @Test func apiActivityBatcherPublishesReconnectBurstsAsOneUpdate() async {
+    let capture = APIActivityBatchCapture()
+    let batcher = APIActivityBatcher(flushDelay: .seconds(10)) { entries in
+      await capture.append(entries)
+    }
+
+    for index in 0..<100 {
+      await batcher.record(
+        APIActivityEntry(
+          remoteHost: "192.168.1.\(index % 10)",
+          clientName: "Reconnect test",
+          method: "GET",
+          path: "/v1/health",
+          statusCode: 200,
+          durationMilliseconds: index,
+          isRemoteClient: true
+        ))
+    }
+    #expect(await capture.batches.isEmpty)
+
+    await batcher.flushNow()
+
+    let batches = await capture.batches
+    #expect(batches.count == 1)
+    #expect(batches.first?.count == 100)
+  }
+
   @Test func apiAuthenticationRequiresAnExactBearerToken() {
     #expect(APIAuthentication.matches(authorizationHeader: "Bearer secret", token: "secret"))
     #expect(!APIAuthentication.matches(authorizationHeader: "Bearer secrets", token: "secret"))
@@ -1225,18 +1844,66 @@ struct RemoteAgentTests {
 
     #expect(model.apiStatus == "API failed: port must be between 1 and 65535")
   }
+
+  @MainActor
+  @Test func appModelRetriesAddressInUseUntilFixedPortIsReleased() async throws {
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let blocker = RemoteAPIServer(advertisesBonjour: false) { _ in
+      HTTPResponse(status: 200)
+    } stateChanged: { _ in
+    }
+    try await blocker.startAndWait(port: 0)
+    defer { blocker.stop() }
+    let port = try #require(blocker.boundPort)
+    let settings = AppSettings(defaults: defaults)
+    settings.apiPort = Int(port)
+    let model = AppModel(settings: settings, advertisesAPIWithBonjour: false)
+
+    model.restartAPI()
+    for _ in 0..<100 {
+      if model.apiStatus.contains("still releasing") { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.apiStatus.contains("still releasing"))
+
+    await blocker.stopAndWait()
+    for _ in 0..<200 {
+      if model.apiListeningPort == port { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.apiListeningPort == port)
+    #expect(model.apiStatus == "Listening on all interfaces · port \(port)")
+
+    let healthURL = try #require(URL(string: "http://127.0.0.1:\(port)/v1/health"))
+    var healthRequest = URLRequest(url: healthURL)
+    healthRequest.setValue("Bearer \(settings.apiToken)", forHTTPHeaderField: "Authorization")
+    let (healthData, healthResponse) = try await URLSession.shared.data(for: healthRequest)
+    #expect((healthResponse as? HTTPURLResponse)?.statusCode == 200)
+    #expect(String(decoding: healthData, as: UTF8.self).contains(#""status":"ok""#))
+
+    settings.apiEnabled = false
+    model.restartAPI()
+    for _ in 0..<100 {
+      if model.apiStatus == "API disabled" { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.apiStatus == "API disabled")
+  }
 }
 
 private func apiRequest(
   method: String,
   path: String,
+  query: [String: String] = [:],
   token: String,
   jsonBody: [String: Any]? = nil
 ) throws -> HTTPRequest {
   HTTPRequest(
     method: method,
     path: path,
-    query: [:],
+    query: query,
     headers: ["authorization": "Bearer \(token)"],
     body: try jsonBody.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data(),
     remoteHost: "192.168.4.2"
@@ -1250,4 +1917,151 @@ private func decodeAPI<Value: Decodable>(
   let decoder = JSONDecoder()
   decoder.dateDecodingStrategy = .iso8601
   return try decoder.decode(type, from: response.body)
+}
+
+private actor APIActivityBatchCapture {
+  private(set) var batches: [[APIActivityEntry]] = []
+
+  func append(_ entries: [APIActivityEntry]) {
+    batches.append(entries)
+  }
+}
+
+private actor ServerHandlerGate {
+  private var started = false
+  private var released = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func wait() async {
+    started = true
+    guard !released else { return }
+    await withCheckedContinuation { waiters.append($0) }
+  }
+
+  func waitUntilStarted() async {
+    while !started { await Task.yield() }
+  }
+
+  func release() {
+    released = true
+    let continuations = waiters
+    waiters.removeAll()
+    for continuation in continuations { continuation.resume() }
+  }
+}
+
+private actor ServerHandlerCompletion {
+  private(set) var isFinished = false
+
+  func markFinished() {
+    isFinished = true
+  }
+
+  func waitUntilFinished() async {
+    while !isFinished { await Task.yield() }
+  }
+}
+
+private enum RemoteAgentTestFailure: Error {
+  case timeout
+  case unexpectedResponse
+  case socketFailure(String)
+}
+
+private func openRawSocket(port: UInt16, receiveBufferSize: Int32? = nil) throws -> Int32 {
+  let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+  guard descriptor >= 0 else { throw RemoteAgentTestFailure.socketFailure("socket") }
+  var noSignal: Int32 = 1
+  setsockopt(
+    descriptor,
+    SOL_SOCKET,
+    SO_NOSIGPIPE,
+    &noSignal,
+    socklen_t(MemoryLayout.size(ofValue: noSignal))
+  )
+  var receiveTimeout = timeval(tv_sec: 2, tv_usec: 0)
+  setsockopt(
+    descriptor,
+    SOL_SOCKET,
+    SO_RCVTIMEO,
+    &receiveTimeout,
+    socklen_t(MemoryLayout.size(ofValue: receiveTimeout))
+  )
+  if var receiveBufferSize {
+    setsockopt(
+      descriptor,
+      SOL_SOCKET,
+      SO_RCVBUF,
+      &receiveBufferSize,
+      socklen_t(MemoryLayout.size(ofValue: receiveBufferSize))
+    )
+  }
+  var address = sockaddr_in()
+  address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+  address.sin_family = sa_family_t(AF_INET)
+  address.sin_port = port.bigEndian
+  guard inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) == 1 else {
+    Darwin.close(descriptor)
+    throw RemoteAgentTestFailure.socketFailure("inet_pton")
+  }
+  let result = withUnsafePointer(to: &address) { pointer in
+    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { addressPointer in
+      Darwin.connect(
+        descriptor,
+        addressPointer,
+        socklen_t(MemoryLayout<sockaddr_in>.size)
+      )
+    }
+  }
+  guard result == 0 else {
+    Darwin.close(descriptor)
+    throw RemoteAgentTestFailure.socketFailure("connect")
+  }
+  return descriptor
+}
+
+private func writeRawRequest(_ request: String, to descriptor: Int32) throws {
+  let data = Data(request.utf8)
+  let sent = data.withUnsafeBytes { bytes in
+    Darwin.send(descriptor, bytes.baseAddress, bytes.count, 0)
+  }
+  guard sent == data.count else { throw RemoteAgentTestFailure.socketFailure("send") }
+}
+
+private func readRawResponse(from descriptor: Int32) throws -> String {
+  String(decoding: try readRawResponseData(from: descriptor), as: UTF8.self)
+}
+
+private func readRawResponseData(from descriptor: Int32) throws -> Data {
+  var response = Data()
+  var buffer = [UInt8](repeating: 0, count: 4_096)
+  while true {
+    let count = Darwin.recv(descriptor, &buffer, buffer.count, 0)
+    if count == 0 { break }
+    guard count > 0 else {
+      if errno == EAGAIN || errno == EWOULDBLOCK { break }
+      throw RemoteAgentTestFailure.socketFailure("recv")
+    }
+    response.append(contentsOf: buffer.prefix(count))
+  }
+  return response
+}
+
+private func waitForBoundPort(_ server: RemoteAPIServer) async throws -> UInt16 {
+  for _ in 0..<200 {
+    if let port = server.boundPort, port != 0 { return port }
+    try await Task.sleep(for: .milliseconds(10))
+  }
+  throw RemoteAgentTestFailure.timeout
+}
+
+private func waitForConnectionCount(
+  _ server: RemoteAPIServer,
+  equalTo expectedCount: Int
+) async throws {
+  for _ in 0..<200 {
+    if server.activeConnectionCount == expectedCount { return }
+    try await Task.sleep(for: .milliseconds(10))
+  }
+  throw RemoteAgentTestFailure.timeout
 }

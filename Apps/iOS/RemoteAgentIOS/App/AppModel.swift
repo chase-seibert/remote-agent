@@ -104,7 +104,12 @@ final class AppModel: ObservableObject {
   private let backgroundRefreshScheduler: any BackgroundRefreshScheduling
   private let backgroundSessionWatchStore: BackgroundSessionWatchStore
   private var client: RemoteAPIClientProtocol?
-  private var pollHandles: [UUID: PollHandle] = [:]
+  private var connectionHandle: OperationHandle?
+  private var connectionTarget: APIConfiguration?
+  private var refreshHandle: OperationHandle?
+  private var foregroundRefreshHandle: OperationHandle?
+  private var pollStates: [UUID: PollState] = [:]
+  private var pollTask: OperationHandle?
   private var unreadBadgeSyncTask: Task<Void, Never>?
   private var sendingSessionIDs: Set<UUID> = []
   private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
@@ -112,6 +117,8 @@ final class AppModel: ObservableObject {
   private var appIsActive = true
   private var didStart = false
   private var protocolVersion = RemoteAgentProtocolVersion.current
+  private var clientGeneration: UInt64 = 0
+  private var usesLegacyFullSessionPolling = false
 
   init(
     configurationStore: ConfigurationStore = ConfigurationStore(),
@@ -159,6 +166,7 @@ final class AppModel: ObservableObject {
       self.backgroundSessionWatchStore = backgroundSessionWatchStore
       configuration = testConfiguration
       self.client = client
+      clientGeneration = 1
       self.sessions = sessions
       selectedSessionID = sessions.first?.id
       connectionState = .connected(version: "test")
@@ -412,36 +420,144 @@ final class AppModel: ObservableObject {
       return
     }
 
+    if let connectionHandle, connectionTarget == proposed {
+      await connectionHandle.task.value
+      return
+    }
+
+    cancelConnection()
+    cancelRefresh()
     cancelPolling()
+    invalidateClient()
     connectionState = .connecting
+    presentedError = nil
+    let handleID = UUID()
+    connectionTarget = proposed
+    let task = Task { [weak self] in
+      guard let self else { return }
+      await self.performConnection(to: proposed, handleID: handleID)
+      self.finishConnection(handleID: handleID)
+    }
+    connectionHandle = OperationHandle(id: handleID, task: task)
+    await task.value
+  }
+
+  private func performConnection(to proposed: APIConfiguration, handleID: UUID) async {
     let proposedClient = RemoteAPIClient(configuration: proposed)
+    logConnectionDiagnostic("Connecting to \(proposed.host):\(proposed.port)")
     do {
       let health = try await proposedClient.health()
       guard health.status == "ok" else { throw RemoteAPIError.invalidData }
+      try Task.checkCancellation()
+      guard connectionHandle?.id == handleID else { return }
+      logConnectionDiagnostic("Health check succeeded; loading projects and sessions")
 
       async let loadedProjects = proposedClient.projects()
       async let loadedSessions = proposedClient.sessions(projectID: nil)
       let snapshot = try await (loadedProjects, loadedSessions)
+      try Task.checkCancellation()
+      guard connectionHandle?.id == handleID else { return }
+      logConnectionDiagnostic(
+        "Snapshot loaded: \(snapshot.0.count) projects, \(snapshot.1.count) sessions"
+      )
 
       try configurationStore.save(proposed)
       configuration = proposed
-      client = proposedClient
+      let generation = installClient(proposedClient)
       protocolVersion = health.version
       projectCommandConfigurations = [:]
       runningProjectCommandSessionIDs = []
       let completionTasks = applySnapshot(projects: snapshot.0, sessions: snapshot.1)
       connectionState = .connected(version: health.version)
-      await migrateLegacyQueuedPrompts(using: proposedClient)
+      logConnectionDiagnostic("Connected with protocol version \(health.version)")
+      await migrateLegacyQueuedPrompts(using: proposedClient, generation: generation)
+      try Task.checkCancellation()
+      guard connectionHandle?.id == handleID else { return }
       startPollingForRunningSessions()
       await waitForCompletionNotifications(completionTasks)
+    } catch is CancellationError {
+      logConnectionDiagnostic("Connection attempt canceled")
+      return
     } catch {
-      client = nil
+      guard connectionHandle?.id == handleID else { return }
+      logConnectionDiagnostic("Connection failed: \(error.localizedDescription)")
+      invalidateClient()
       connectionState = .failed(message: error.localizedDescription)
       presentedError = error.localizedDescription
     }
   }
 
+  private func logConnectionDiagnostic(_ message: String) {
+    #if DEBUG
+      print("[RemoteAgentConnection] \(message)")
+    #endif
+  }
+
+  private func finishConnection(handleID: UUID) {
+    guard connectionHandle?.id == handleID else { return }
+    connectionHandle = nil
+    connectionTarget = nil
+  }
+
+  private func cancelConnection() {
+    let task = connectionHandle?.task
+    connectionHandle = nil
+    connectionTarget = nil
+    task?.cancel()
+  }
+
+  @discardableResult
+  private func installClient(_ client: any RemoteAPIClientProtocol) -> UInt64 {
+    clientGeneration &+= 1
+    self.client = client
+    usesLegacyFullSessionPolling = false
+    return clientGeneration
+  }
+
+  private func invalidateClient() {
+    clientGeneration &+= 1
+    client = nil
+    sendingSessionIDs.removeAll()
+    runningProjectCommandSessionIDs.removeAll()
+    usesLegacyFullSessionPolling = false
+  }
+
+  private var currentClientContext: ClientContext? {
+    guard let client else { return nil }
+    return ClientContext(client: client, generation: clientGeneration)
+  }
+
+  private func isCurrent(_ context: ClientContext) -> Bool {
+    client != nil && context.generation == clientGeneration
+  }
+
+  private func withCurrentClient<Value: Sendable>(
+    _ operation: (any RemoteAPIClientProtocol) async throws -> Value
+  ) async throws -> Value {
+    guard let context = currentClientContext else { throw RemoteAPIError.notConnected }
+    return try await withClient(context, operation)
+  }
+
+  private func withClient<Value: Sendable>(
+    _ context: ClientContext,
+    _ operation: (any RemoteAPIClientProtocol) async throws -> Value
+  ) async throws -> Value {
+    do {
+      let value = try await operation(context.client)
+      try Task.checkCancellation()
+      guard isCurrent(context) else { throw CancellationError() }
+      return value
+    } catch {
+      guard isCurrent(context), !Task.isCancelled else { throw CancellationError() }
+      throw error
+    }
+  }
+
   func retryConnection() async {
+    if let connectionHandle {
+      await connectionHandle.task.value
+      return
+    }
     guard let configuration else {
       connectionState = .notConfigured
       return
@@ -451,8 +567,11 @@ final class AppModel: ObservableObject {
 
   func disconnect() {
     backgroundRefreshScheduler.cancel()
+    cancelForegroundRefresh()
+    cancelRefresh()
+    cancelConnection()
     cancelPolling()
-    client = nil
+    invalidateClient()
     connectionState = configuration == nil ? .notConfigured : .disconnected
   }
 
@@ -474,22 +593,68 @@ final class AppModel: ObservableObject {
   }
 
   func refresh() async {
-    guard let client else {
+    if let connectionHandle {
+      await connectionHandle.task.value
+      return
+    }
+    guard client != nil else {
       await retryConnection()
       return
     }
+
+    if let refreshHandle {
+      await refreshHandle.task.value
+      return
+    }
+
+    let handleID = UUID()
+    let task = Task { [weak self] in
+      guard let self else { return }
+      await self.performRefresh(handleID: handleID)
+      self.finishRefresh(handleID: handleID)
+    }
+    refreshHandle = OperationHandle(id: handleID, task: task)
+    await task.value
+  }
+
+  private func performRefresh(handleID: UUID) async {
+    guard let context = currentClientContext else { return }
+    let client = context.client
     do {
+      let health = try await client.health()
+      guard health.status == "ok" else { throw RemoteAPIError.invalidData }
+      try Task.checkCancellation()
+      guard refreshHandle?.id == handleID else { return }
       async let loadedProjects = client.projects()
       async let loadedSessions = client.sessions(projectID: nil)
       let snapshot = try await (loadedProjects, loadedSessions)
+      try Task.checkCancellation()
+      guard refreshHandle?.id == handleID else { return }
+      protocolVersion = health.version
       let completionTasks = applySnapshot(projects: snapshot.0, sessions: snapshot.1)
-      connectionState = .connected(version: protocolVersion)
-      await migrateLegacyQueuedPrompts(using: client)
+      connectionState = .connected(version: health.version)
+      await migrateLegacyQueuedPrompts(using: client, generation: context.generation)
+      try Task.checkCancellation()
+      guard refreshHandle?.id == handleID else { return }
       startPollingForRunningSessions()
       await waitForCompletionNotifications(completionTasks)
+    } catch is CancellationError {
+      return
     } catch {
+      guard refreshHandle?.id == handleID else { return }
       connectionState = .failed(message: error.localizedDescription)
     }
+  }
+
+  private func finishRefresh(handleID: UUID) {
+    guard refreshHandle?.id == handleID else { return }
+    refreshHandle = nil
+  }
+
+  private func cancelRefresh() {
+    let task = refreshHandle?.task
+    refreshHandle = nil
+    task?.cancel()
   }
 
   func selectSession(_ id: UUID?) {
@@ -501,28 +666,32 @@ final class AppModel: ObservableObject {
   }
 
   func markSessionRead(_ id: UUID) async {
-    guard sessions.first(where: { $0.id == id })?.isUnread == true, let client else { return }
+    guard sessions.first(where: { $0.id == id })?.isUnread == true else { return }
     do {
-      let updated = try await client.markSessionRead(id: id)
-      replaceSession(updated)
-    } catch {
-      if case RemoteAPIError.unreachable = error {
-        connectionState = .failed(message: error.localizedDescription)
+      let updated = try await withCurrentClient { client in
+        try await client.markSessionRead(id: id)
       }
-    }
+      replaceSession(updated)
+    } catch is CancellationError {
+    } catch {}
   }
 
   @discardableResult
   func markSessionUnread(_ id: UUID) async -> Bool {
     guard sessions.first(where: { $0.id == id })?.isUnread == false else { return true }
-    guard let client else {
+    guard client != nil else {
       presentedError = RemoteAPIError.notConnected.localizedDescription
       return false
     }
     do {
-      replaceSession(try await client.markSessionUnread(id: id))
+      let updated = try await withCurrentClient { client in
+        try await client.markSessionUnread(id: id)
+      }
+      replaceSession(updated)
       connectionState = .connected(version: protocolVersion)
       return true
+    } catch is CancellationError {
+      return false
     } catch {
       presentedError = error.localizedDescription
       if case RemoteAPIError.unreachable = error {
@@ -538,14 +707,19 @@ final class AppModel: ObservableObject {
       presentedError = "Session names must be between 1 and 120 characters."
       return false
     }
-    guard let client else {
+    guard client != nil else {
       presentedError = RemoteAPIError.notConnected.localizedDescription
       return false
     }
     do {
-      replaceSession(try await client.renameSession(id: id, title: title))
+      let updated = try await withCurrentClient { client in
+        try await client.renameSession(id: id, title: title)
+      }
+      replaceSession(updated)
       connectionState = .connected(version: protocolVersion)
       return true
+    } catch is CancellationError {
+      return false
     } catch {
       presentedError = error.localizedDescription
       if case RemoteAPIError.unreachable = error {
@@ -556,14 +730,19 @@ final class AppModel: ObservableObject {
   }
 
   func setSessionPinned(_ id: UUID, isPinned: Bool) async -> Bool {
-    guard let client else {
+    guard client != nil else {
       presentedError = RemoteAPIError.notConnected.localizedDescription
       return false
     }
     do {
-      replaceSession(try await client.setSessionPinned(id: id, isPinned: isPinned))
+      let updated = try await withCurrentClient { client in
+        try await client.setSessionPinned(id: id, isPinned: isPinned)
+      }
+      replaceSession(updated)
       connectionState = .connected(version: protocolVersion)
       return true
+    } catch is CancellationError {
+      return false
     } catch {
       presentedError = error.localizedDescription
       if case RemoteAPIError.unreachable = error {
@@ -580,14 +759,15 @@ final class AppModel: ObservableObject {
       presentedError = "Wait for this session to finish before deleting it."
       return false
     }
-    guard let client else {
+    guard client != nil else {
       presentedError = RemoteAPIError.notConnected.localizedDescription
       return false
     }
     do {
-      _ = try await client.deleteSession(id: id)
-      pollHandles[id]?.task.cancel()
-      pollHandles[id] = nil
+      _ = try await withCurrentClient { client in
+        try await client.deleteSession(id: id)
+      }
+      finishPolling(sessionID: id)
       sendingSessionIDs.remove(id)
       runningProjectCommandSessionIDs.remove(id)
       projectCommandConfigurations[id] = nil
@@ -601,6 +781,8 @@ final class AppModel: ObservableObject {
       reconcileBackgroundRefreshState()
       connectionState = .connected(version: protocolVersion)
       return true
+    } catch is CancellationError {
+      return false
     } catch {
       presentedError = error.localizedDescription
       if case RemoteAPIError.unreachable = error {
@@ -611,12 +793,15 @@ final class AppModel: ObservableObject {
   }
 
   func createSession(projectID: String) async {
-    guard projects.contains(where: { $0.id == projectID }), let client else { return }
+    guard projects.contains(where: { $0.id == projectID }), client != nil else { return }
     do {
-      let session = try await client.createSession(projectID: projectID)
+      let session = try await withCurrentClient { client in
+        try await client.createSession(projectID: projectID)
+      }
       replaceSession(session)
       selectedSessionID = session.id
       connectionState = .connected(version: protocolVersion)
+    } catch is CancellationError {
     } catch {
       presentedError = error.localizedDescription
       if case RemoteAPIError.unreachable = error {
@@ -626,8 +811,9 @@ final class AppModel: ObservableObject {
   }
 
   func documents(projectID: String) async throws -> [ProjectDocument] {
-    guard let client else { throw RemoteAPIError.notConnected }
-    return try await client.documents(projectID: projectID)
+    try await withCurrentClient { client in
+      try await client.documents(projectID: projectID)
+    }
   }
 
   func projectCommandConfiguration(sessionID: UUID) -> ProjectCommandConfigurationResponse? {
@@ -641,20 +827,23 @@ final class AppModel: ObservableObject {
   }
 
   func loadProjectCommandConfiguration(sessionID: UUID) async {
-    guard let client, connectionState.isConnected else { return }
+    guard client != nil, connectionState.isConnected else { return }
     do {
-      let configuration = try await client.projectCommandConfiguration(sessionID: sessionID)
+      let configuration = try await withCurrentClient { client in
+        try await client.projectCommandConfiguration(sessionID: sessionID)
+      }
       projectCommandConfigurations[sessionID] = configuration
       if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
         sessions[index].selectedMakeTarget = configuration.selectedMakeTarget
       }
+    } catch is CancellationError {
     } catch {
       presentedError = error.localizedDescription
     }
   }
 
   func selectMakeTarget(_ target: String, sessionID: UUID) async {
-    guard let client,
+    guard client != nil,
       let previousConfiguration = projectCommandConfigurations[sessionID],
       previousConfiguration.makeTargets.contains(target)
     else { return }
@@ -668,8 +857,12 @@ final class AppModel: ObservableObject {
       sessions[index].selectedMakeTarget = target
     }
     do {
-      replaceSession(try await client.selectMakeTarget(target, sessionID: sessionID))
+      let updated = try await withCurrentClient { client in
+        try await client.selectMakeTarget(target, sessionID: sessionID)
+      }
+      replaceSession(updated)
       await loadProjectCommandConfiguration(sessionID: sessionID)
+    } catch is CancellationError {
     } catch {
       projectCommandConfigurations[sessionID] = previousConfiguration
       if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
@@ -680,7 +873,7 @@ final class AppModel: ObservableObject {
   }
 
   func runProjectCommand(_ action: ProjectCommandAction, sessionID: UUID) async {
-    guard let client,
+    guard let context = currentClientContext,
       let original = sessions.first(where: { $0.id == sessionID }),
       !original.hasActiveWork,
       !runningProjectCommandSessionIDs.contains(sessionID)
@@ -694,17 +887,21 @@ final class AppModel: ObservableObject {
     runningProjectCommandSessionIDs.insert(sessionID)
     updateProjectCommandRunningState(sessionID: sessionID, isRunning: true)
     do {
-      let accepted = try await client.runProjectCommand(
-        action,
-        target: target,
-        sessionID: sessionID
-      )
+      let accepted = try await withClient(context) { client in
+        try await client.runProjectCommand(
+          action,
+          target: target,
+          sessionID: sessionID
+        )
+      }
       guard accepted.sessionID == sessionID, accepted.status == "accepted" else {
         throw RemoteAPIError.invalidData
       }
 
       for _ in 0..<5 {
-        let updated = try await client.session(id: sessionID)
+        let updated = try await withClient(context) { client in
+          try await client.session(id: sessionID)
+        }
         replaceSession(updated)
         if updated.messages.count > original.messages.count || updated.hasPendingProjectCommand {
           if !updated.hasPendingProjectCommand {
@@ -719,9 +916,13 @@ final class AppModel: ObservableObject {
         sessionID: sessionID,
         acceptedBaseline: PollBaseline(
           messageCount: original.messages.count,
-          updatedAt: original.updatedAt
+          updatedAt: original.updatedAt,
+          contentRevision: original.contentRevision
         )
       )
+    } catch is CancellationError {
+      runningProjectCommandSessionIDs.remove(sessionID)
+      updateProjectCommandRunningState(sessionID: sessionID, isRunning: false)
     } catch {
       runningProjectCommandSessionIDs.remove(sessionID)
       updateProjectCommandRunningState(sessionID: sessionID, isRunning: false)
@@ -735,8 +936,9 @@ final class AppModel: ObservableObject {
   func projectCommandResult(sessionID: UUID, resultID: UUID) async throws
     -> RemoteProjectCommandResult
   {
-    guard let client else { throw RemoteAPIError.notConnected }
-    return try await client.projectCommandResult(sessionID: sessionID, resultID: resultID)
+    try await withCurrentClient { client in
+      try await client.projectCommandResult(sessionID: sessionID, resultID: resultID)
+    }
   }
 
   private func updateProjectCommandRunningState(sessionID: UUID, isRunning: Bool) {
@@ -754,8 +956,9 @@ final class AppModel: ObservableObject {
   func documentContent(projectID: String, documentID: String) async throws
     -> ProjectDocumentContent
   {
-    guard let client else { throw RemoteAPIError.notConnected }
-    return try await client.documentContent(projectID: projectID, documentID: documentID)
+    try await withCurrentClient { client in
+      try await client.documentContent(projectID: projectID, documentID: documentID)
+    }
   }
 
   func document(projectID: String, relativePath: String) async throws -> ProjectDocument {
@@ -804,12 +1007,14 @@ final class AppModel: ObservableObject {
       presentedError = "Queued prompt text cannot be empty."
       return false
     }
-    guard let client else {
+    guard client != nil else {
       presentedError = RemoteAPIError.notConnected.localizedDescription
       return false
     }
     do {
-      let updated = try await client.updateQueuedPrompt(promptID, text: text, sessionID: sessionID)
+      let updated = try await withCurrentClient { client in
+        try await client.updateQueuedPrompt(promptID, text: text, sessionID: sessionID)
+      }
       guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionID }),
         let promptIndex = sessions[sessionIndex].queuedPrompts.firstIndex(where: {
           $0.id == promptID
@@ -818,6 +1023,8 @@ final class AppModel: ObservableObject {
       sessions[sessionIndex].queuedPrompts[promptIndex] = updated
       connectionState = .connected(version: protocolVersion)
       return true
+    } catch is CancellationError {
+      return false
     } catch {
       await handleQueueMutationFailure(error, sessionID: sessionID)
       return false
@@ -825,18 +1032,22 @@ final class AppModel: ObservableObject {
   }
 
   func removeQueuedPrompt(_ promptID: UUID, sessionID: UUID) async -> Bool {
-    guard let client else {
+    guard client != nil else {
       presentedError = RemoteAPIError.notConnected.localizedDescription
       return false
     }
     do {
-      _ = try await client.deleteQueuedPrompt(promptID, sessionID: sessionID)
+      _ = try await withCurrentClient { client in
+        try await client.deleteQueuedPrompt(promptID, sessionID: sessionID)
+      }
       guard let sessionIndex = sessions.firstIndex(where: { $0.id == sessionID }) else {
         return false
       }
       sessions[sessionIndex].queuedPrompts.removeAll { $0.id == promptID }
       connectionState = .connected(version: protocolVersion)
       return true
+    } catch is CancellationError {
+      return false
     } catch {
       await handleQueueMutationFailure(error, sessionID: sessionID)
       return false
@@ -848,14 +1059,16 @@ final class AppModel: ObservableObject {
     to sessionID: UUID,
     clearDraftOnSuccess: Bool
   ) async -> Bool {
-    guard let client,
+    guard let context = currentClientContext,
       let original = sessions.first(where: { $0.id == sessionID }), !original.hasActiveWork,
       !runningProjectCommandSessionIDs.contains(sessionID),
       !sendingSessionIDs.contains(sessionID)
     else { return false }
 
     sendingSessionIDs.insert(sessionID)
-    defer { sendingSessionIDs.remove(sessionID) }
+    defer {
+      if isCurrent(context) { sendingSessionIDs.remove(sessionID) }
+    }
 
     let optimisticMessage = AgentMessage(
       id: UUID(),
@@ -869,7 +1082,9 @@ final class AppModel: ObservableObject {
     }
 
     do {
-      let accepted = try await client.sendMessage(text, sessionID: sessionID)
+      let accepted = try await withClient(context) { client in
+        try await client.sendMessage(text, sessionID: sessionID)
+      }
       guard accepted.sessionID == sessionID, accepted.status == "accepted" else {
         throw RemoteAPIError.invalidData
       }
@@ -884,10 +1099,13 @@ final class AppModel: ObservableObject {
         sessionID: sessionID,
         acceptedBaseline: PollBaseline(
           messageCount: original.messages.count,
-          updatedAt: original.updatedAt
+          updatedAt: original.updatedAt,
+          contentRevision: original.contentRevision
         )
       )
       return true
+    } catch is CancellationError {
+      return false
     } catch {
       if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
         sessions[index].messages.removeAll { $0.id == optimisticMessage.id }
@@ -922,9 +1140,11 @@ final class AppModel: ObservableObject {
     sessionID: UUID,
     clearDraftOnSuccess: Bool
   ) async -> Bool {
-    guard let client else { return false }
+    guard let context = currentClientContext else { return false }
     do {
-      let queued = try await client.enqueuePrompt(text, sessionID: sessionID)
+      let queued = try await withClient(context) { client in
+        try await client.enqueuePrompt(text, sessionID: sessionID)
+      }
       if let index = sessions.firstIndex(where: { $0.id == sessionID }),
         !sessions[index].queuedPrompts.contains(where: { $0.id == queued.id })
       {
@@ -935,6 +1155,8 @@ final class AppModel: ObservableObject {
       startPolling(sessionID: sessionID)
       connectionState = .connected(version: protocolVersion)
       return true
+    } catch is CancellationError {
+      return false
     } catch {
       presentedError = error.localizedDescription
       if case RemoteAPIError.unreachable = error {
@@ -950,11 +1172,18 @@ final class AppModel: ObservableObject {
       connectionState = .failed(message: error.localizedDescription)
       return
     }
-    guard let client, let updated = try? await client.session(id: sessionID) else { return }
+    guard
+      let updated = try? await withCurrentClient({ client in
+        try await client.session(id: sessionID)
+      })
+    else { return }
     replaceSession(updated)
   }
 
-  private func migrateLegacyQueuedPrompts(using client: any RemoteAPIClientProtocol) async {
+  private func migrateLegacyQueuedPrompts(
+    using client: any RemoteAPIClientProtocol,
+    generation: UInt64
+  ) async {
     guard let serverIdentifier = configuration?.serverIdentifier else { return }
     for session in sessions {
       var legacy = draftStore.queuedPrompts(
@@ -964,6 +1193,8 @@ final class AppModel: ObservableObject {
       while let prompt = legacy.first {
         do {
           let queued = try await client.enqueuePrompt(prompt.text, sessionID: session.id)
+          try Task.checkCancellation()
+          guard clientGeneration == generation, self.client != nil else { return }
           if let index = sessions.firstIndex(where: { $0.id == session.id }),
             !sessions[index].queuedPrompts.contains(where: { $0.id == queued.id })
           {
@@ -988,16 +1219,42 @@ final class AppModel: ObservableObject {
     if isActive {
       backgroundRefreshScheduler.cancel()
       endBackgroundTask()
-      Task { [weak self] in await self?.refreshForForeground() }
+      startForegroundRefresh()
     } else if sessions.contains(where: \.hasActiveWork)
       || !runningProjectCommandSessionIDs.isEmpty
     {
+      cancelForegroundRefresh()
+      cancelRefresh()
       reconcileBackgroundRefreshState()
       beginBackgroundPolling()
     } else {
+      cancelForegroundRefresh()
+      cancelRefresh()
       backgroundRefreshScheduler.cancel()
       cancelPolling()
     }
+  }
+
+  private func startForegroundRefresh() {
+    guard foregroundRefreshHandle == nil else { return }
+    let handleID = UUID()
+    let task = Task { [weak self] in
+      guard let self else { return }
+      await self.refreshForForeground()
+      self.finishForegroundRefresh(handleID: handleID)
+    }
+    foregroundRefreshHandle = OperationHandle(id: handleID, task: task)
+  }
+
+  private func finishForegroundRefresh(handleID: UUID) {
+    guard foregroundRefreshHandle?.id == handleID else { return }
+    foregroundRefreshHandle = nil
+  }
+
+  private func cancelForegroundRefresh() {
+    let task = foregroundRefreshHandle?.task
+    foregroundRefreshHandle = nil
+    task?.cancel()
   }
 
   func performBackgroundRefresh() async {
@@ -1022,16 +1279,24 @@ final class AppModel: ObservableObject {
     // The delivered request is no longer pending, so queue the next opportunity before doing I/O.
     backgroundRefreshScheduler.schedule()
     do {
-      guard let client else { return }
-      let health = try await client.health()
+      guard let context = currentClientContext else { return }
+      let health = try await withClient(context) { client in
+        try await client.health()
+      }
       guard health.status == "ok" else { throw RemoteAPIError.invalidData }
-      let loadedSessions = try await client.sessions(projectID: nil)
+      let loadedSessions = try await withClient(context) { client in
+        try await client.sessions(projectID: nil)
+      }
+      try Task.checkCancellation()
+      guard !appIsActive else { return }
       protocolVersion = health.version
       let completionTasks = applySnapshot(projects: projects, sessions: loadedSessions)
       connectionState = .connected(version: health.version)
       await waitForCompletionNotifications(completionTasks)
+    } catch is CancellationError {
+      return
     } catch {
-      guard !Task.isCancelled else { return }
+      guard !Task.isCancelled, !appIsActive else { return }
       connectionState = .failed(message: error.localizedDescription)
     }
     reconcileBackgroundRefreshState()
@@ -1039,7 +1304,7 @@ final class AppModel: ObservableObject {
 
   func refreshForForeground() async {
     await refresh()
-    guard appIsActive, let selectedSessionID else { return }
+    guard appIsActive, connectionState.isConnected, let selectedSessionID else { return }
     await markSessionRead(selectedSessionID)
   }
 
@@ -1070,19 +1335,21 @@ final class AppModel: ObservableObject {
     return completionTasks
   }
 
-  private func replaceSession(_ updated: AgentSession) {
+  @discardableResult
+  private func replaceSession(_ updated: AgentSession) -> Task<Void, Never>? {
     let watchedSessionIDs = backgroundWatchedSessionIDs()
+    let completionTask: Task<Void, Never>?
     if let index = sessions.firstIndex(where: { $0.id == updated.id }) {
       let previous = sessions[index]
       sessions[index] = updated
-      notifyIfCompleted(
+      completionTask = notifyIfCompleted(
         previous: previous,
         updated: updated,
         watchedSessionIDs: watchedSessionIDs
       )
     } else {
       sessions.append(updated)
-      notifyIfCompleted(
+      completionTask = notifyIfCompleted(
         previous: nil,
         updated: updated,
         watchedSessionIDs: watchedSessionIDs
@@ -1090,6 +1357,7 @@ final class AppModel: ObservableObject {
     }
     syncUnreadSessionBadge()
     reconcileBackgroundRefreshState()
+    return completionTask
   }
 
   private func syncUnreadSessionBadge() {
@@ -1114,77 +1382,224 @@ final class AppModel: ObservableObject {
   }
 
   private func startPolling(sessionID: UUID, acceptedBaseline: PollBaseline? = nil) {
-    guard appIsActive, client != nil, pollHandles[sessionID] == nil else { return }
+    guard appIsActive, client != nil else { return }
+    if pollStates[sessionID] == nil {
+      pollStates[sessionID] = PollState(acceptedBaseline: acceptedBaseline)
+    }
+    startPollingTaskIfNeeded()
+  }
+
+  private func startPollingTaskIfNeeded() {
+    guard appIsActive, client != nil, !pollStates.isEmpty, pollTask == nil else { return }
     let handleID = UUID()
     let task = Task { [weak self] in
       guard let self else { return }
-      await self.poll(
-        sessionID: sessionID,
-        handleID: handleID,
-        acceptedBaseline: acceptedBaseline
-      )
+      await self.pollActiveSessions(handleID: handleID)
+      self.finishPollingTask(handleID: handleID)
     }
-    pollHandles[sessionID] = PollHandle(id: handleID, task: task)
+    pollTask = OperationHandle(id: handleID, task: task)
   }
 
-  private func poll(sessionID: UUID, handleID: UUID, acceptedBaseline: PollBaseline?) async {
-    guard let client else {
-      finishPolling(sessionID: sessionID, handleID: handleID)
-      return
-    }
-
-    var observedRunning = acceptedBaseline == nil
-    var graceAttemptsRemaining = acceptedBaseline == nil ? 0 : 5
-
-    while !Task.isCancelled, appIsActive {
+  private func pollActiveSessions(handleID: UUID) async {
+    while !Task.isCancelled, appIsActive, !pollStates.isEmpty {
       do {
         try await Task.sleep(for: .seconds(1))
-        let updated = try await client.session(id: sessionID)
-        replaceSession(updated)
-        connectionState = .connected(version: protocolVersion)
-
-        if updated.hasActiveWork {
-          observedRunning = true
-          continue
-        }
-
-        if let baseline = acceptedBaseline, !observedRunning {
-          let serverAcceptedTurn =
-            updated.messages.count > baseline.messageCount
-            || updated.updatedAt > baseline.updatedAt
-          if !serverAcceptedTurn, graceAttemptsRemaining > 0 {
-            graceAttemptsRemaining -= 1
-            continue
+        let completionTasks: [Task<Void, Never>]
+        if usesLegacyFullSessionPolling {
+          completionTasks = try await pollFullSessionSnapshot(handleID: handleID)
+        } else {
+          do {
+            completionTasks = try await pollSessionStatuses(handleID: handleID)
+          } catch RemoteAPIError.http(status: 404, detail: _) {
+            usesLegacyFullSessionPolling = true
+            completionTasks = try await pollFullSessionSnapshot(handleID: handleID)
           }
         }
-        break
+        guard pollTask?.id == handleID else { break }
+        connectionState = .connected(version: protocolVersion)
+        await waitForCompletionNotifications(completionTasks)
       } catch is CancellationError {
         break
       } catch {
+        guard pollTask?.id == handleID else { break }
         connectionState = .failed(message: error.localizedDescription)
+        for sessionID in Array(pollStates.keys) {
+          finishPolling(sessionID: sessionID)
+        }
         break
       }
     }
-    finishPolling(sessionID: sessionID, handleID: handleID)
   }
 
-  private func finishPolling(sessionID: UUID, handleID: UUID) {
-    guard pollHandles[sessionID]?.id == handleID else { return }
-    pollHandles[sessionID] = nil
+  private func pollSessionStatuses(handleID: UUID) async throws -> [Task<Void, Never>] {
+    let watchedSessionIDs = pollStates.keys.sorted { $0.uuidString < $1.uuidString }
+    var statuses: [SessionStatusSnapshot] = []
+    var batchStart = 0
+    while batchStart < watchedSessionIDs.count {
+      let batchEnd = min(batchStart + 50, watchedSessionIDs.count)
+      let batch = Array(watchedSessionIDs[batchStart..<batchEnd])
+      let batchStatuses = try await withCurrentClient { client in
+        try await client.sessionStatuses(ids: batch)
+      }
+      statuses.append(contentsOf: batchStatuses)
+      batchStart = batchEnd
+    }
+    guard pollTask?.id == handleID else { throw CancellationError() }
+
+    let statusesByID = Dictionary(
+      statuses.map { ($0.id, $0) },
+      uniquingKeysWith: { _, latest in latest }
+    )
+    var deferredSessionIDs: Set<UUID> = []
+    var sessionsToRefresh: [UUID] = []
+    var completionTasks: [Task<Void, Never>] = []
+    var shouldSyncUnreadBadge = false
+    var shouldReconcileBackgroundState = false
+
+    for sessionID in watchedSessionIDs {
+      guard var state = pollStates[sessionID],
+        let status = statusesByID[sessionID],
+        let current = sessions.first(where: { $0.id == sessionID })
+      else {
+        shouldReconcileBackgroundState =
+          finishPolling(sessionID: sessionID)
+          || shouldReconcileBackgroundState
+        continue
+      }
+
+      if let baseline = state.acceptedBaseline,
+        !state.observedRunning,
+        !status.hasActiveWork
+      {
+        let serverAcceptedTurn =
+          status.contentRevision > baseline.contentRevision
+          || status.messageCount > baseline.messageCount
+          || status.updatedAt > baseline.updatedAt
+        if !serverAcceptedTurn, state.graceAttemptsRemaining > 0 {
+          state.graceAttemptsRemaining -= 1
+          pollStates[sessionID] = state
+          deferredSessionIDs.insert(sessionID)
+          continue
+        }
+      }
+
+      if status.hasActiveWork {
+        state.observedRunning = true
+      }
+      pollStates[sessionID] = state
+
+      if statusRequiresFullSession(status, current: current) {
+        sessionsToRefresh.append(sessionID)
+      } else if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+        shouldReconcileBackgroundState =
+          sessions[index].isRunning != status.isRunning
+          || shouldReconcileBackgroundState
+        shouldSyncUnreadBadge =
+          sessions[index].isUnread != status.isUnread
+          || shouldSyncUnreadBadge
+        sessions[index].isRunning = status.isRunning
+        sessions[index].currentReasoning = status.currentReasoning
+        sessions[index].isUnread = status.isUnread
+      }
+    }
+
+    for sessionID in sessionsToRefresh {
+      let updated = try await withCurrentClient { client in
+        try await client.session(id: sessionID)
+      }
+      guard pollTask?.id == handleID else { throw CancellationError() }
+      if let task = replaceSession(updated) {
+        completionTasks.append(task)
+      }
+    }
+
+    for sessionID in watchedSessionIDs where !deferredSessionIDs.contains(sessionID) {
+      guard var state = pollStates[sessionID] else { continue }
+      if sessions.first(where: { $0.id == sessionID })?.hasActiveWork == true {
+        state.observedRunning = true
+        pollStates[sessionID] = state
+      } else {
+        shouldReconcileBackgroundState =
+          finishPolling(sessionID: sessionID)
+          || shouldReconcileBackgroundState
+      }
+    }
+
+    if shouldSyncUnreadBadge { syncUnreadSessionBadge() }
+    if shouldReconcileBackgroundState { reconcileBackgroundRefreshState() }
+    return completionTasks
+  }
+
+  private func statusRequiresFullSession(
+    _ status: SessionStatusSnapshot,
+    current: AgentSession
+  ) -> Bool {
+    status.contentRevision != current.contentRevision
+      || status.messageCount != current.messages.count
+      || status.updatedAt != current.updatedAt
+      || status.isRunning != current.isRunning
+      || status.hasPendingProjectCommand != current.hasPendingProjectCommand
+      || status.queuedPromptCount != current.queuedPrompts.count
+  }
+
+  private func pollFullSessionSnapshot(handleID: UUID) async throws -> [Task<Void, Never>] {
+    let updatedSessions = try await withCurrentClient { client in
+      try await client.sessions(projectID: nil)
+    }
+    guard pollTask?.id == handleID else { throw CancellationError() }
+    let updatesByID = Dictionary(uniqueKeysWithValues: updatedSessions.map { ($0.id, $0) })
+    let completionTasks = applySnapshot(projects: projects, sessions: updatedSessions)
+    for sessionID in Array(pollStates.keys) {
+      guard var state = pollStates[sessionID], let updated = updatesByID[sessionID] else {
+        finishPolling(sessionID: sessionID)
+        continue
+      }
+      if updated.hasActiveWork {
+        state.observedRunning = true
+        pollStates[sessionID] = state
+        continue
+      }
+
+      if let baseline = state.acceptedBaseline, !state.observedRunning {
+        let serverAcceptedTurn =
+          updated.contentRevision > baseline.contentRevision
+          || updated.messages.count > baseline.messageCount
+          || updated.updatedAt > baseline.updatedAt
+        if !serverAcceptedTurn, state.graceAttemptsRemaining > 0 {
+          state.graceAttemptsRemaining -= 1
+          pollStates[sessionID] = state
+          continue
+        }
+      }
+      finishPolling(sessionID: sessionID)
+    }
+    return completionTasks
+  }
+
+  @discardableResult
+  private func finishPolling(sessionID: UUID) -> Bool {
+    guard pollStates.removeValue(forKey: sessionID) != nil else { return false }
     if sessions.first(where: { $0.id == sessionID })?.hasPendingProjectCommand != true {
       runningProjectCommandSessionIDs.remove(sessionID)
       updateProjectCommandRunningState(sessionID: sessionID, isRunning: false)
     }
-    if !appIsActive, pollHandles.isEmpty, pendingCompletionNotifications == 0 {
+    if !appIsActive, pollStates.isEmpty, pendingCompletionNotifications == 0 {
       endBackgroundTask()
     }
+    return true
+  }
+
+  private func finishPollingTask(handleID: UUID) {
+    guard pollTask?.id == handleID else { return }
+    pollTask = nil
+    startPollingTaskIfNeeded()
   }
 
   private func cancelPolling() {
-    for handle in pollHandles.values {
-      handle.task.cancel()
-    }
-    pollHandles.removeAll()
+    let task = pollTask?.task
+    pollTask = nil
+    pollStates.removeAll()
+    task?.cancel()
     endBackgroundTask()
   }
 
@@ -1200,7 +1615,7 @@ final class AppModel: ObservableObject {
     return Task {
       await completionNotifications.notifyCompletion(for: updated)
       pendingCompletionNotifications -= 1
-      if !appIsActive, pollHandles.isEmpty, pendingCompletionNotifications == 0 {
+      if !appIsActive, pollStates.isEmpty, pendingCompletionNotifications == 0 {
         endBackgroundTask()
       }
     }
@@ -1257,9 +1672,27 @@ final class AppModel: ObservableObject {
   private struct PollBaseline {
     let messageCount: Int
     let updatedAt: Date
+    let contentRevision: UInt64
   }
 
-  private struct PollHandle {
+  private struct PollState {
+    let acceptedBaseline: PollBaseline?
+    var observedRunning: Bool
+    var graceAttemptsRemaining: Int
+
+    init(acceptedBaseline: PollBaseline?) {
+      self.acceptedBaseline = acceptedBaseline
+      observedRunning = acceptedBaseline == nil
+      graceAttemptsRemaining = acceptedBaseline == nil ? 0 : 5
+    }
+  }
+
+  private struct ClientContext: Sendable {
+    let client: any RemoteAPIClientProtocol
+    let generation: UInt64
+  }
+
+  private struct OperationHandle {
     let id: UUID
     let task: Task<Void, Never>
   }

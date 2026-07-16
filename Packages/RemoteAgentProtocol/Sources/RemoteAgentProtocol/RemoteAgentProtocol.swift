@@ -8,6 +8,7 @@ public enum RemoteAgentEndpoint {
   public static let health = "/v1/health"
   public static let projects = "/v1/projects"
   public static let sessions = "/v1/sessions"
+  public static let sessionStatus = "/v1/session-status"
   public static let documents = "/v1/documents"
 
   public static func session(_ id: UUID) -> String {
@@ -44,6 +45,44 @@ public enum RemoteAgentEndpoint {
 
   public static func document(_ id: String) -> String {
     "\(documents)/\(id)"
+  }
+}
+
+public struct SessionStatusSnapshot: Identifiable, Codable, Equatable, Sendable {
+  public let id: UUID
+  public let contentRevision: UInt64
+  public let messageCount: Int
+  public let updatedAt: Date
+  public let isRunning: Bool
+  public let currentReasoning: String?
+  public let isUnread: Bool
+  public let hasPendingProjectCommand: Bool
+  public let queuedPromptCount: Int
+
+  public init(
+    id: UUID,
+    contentRevision: UInt64,
+    messageCount: Int,
+    updatedAt: Date,
+    isRunning: Bool,
+    currentReasoning: String?,
+    isUnread: Bool,
+    hasPendingProjectCommand: Bool,
+    queuedPromptCount: Int
+  ) {
+    self.id = id
+    self.contentRevision = contentRevision
+    self.messageCount = messageCount
+    self.updatedAt = updatedAt
+    self.isRunning = isRunning
+    self.currentReasoning = currentReasoning
+    self.isUnread = isUnread
+    self.hasPendingProjectCommand = hasPendingProjectCommand
+    self.queuedPromptCount = queuedPromptCount
+  }
+
+  public var hasActiveWork: Bool {
+    isRunning || hasPendingProjectCommand || queuedPromptCount > 0
   }
 }
 

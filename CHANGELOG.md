@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-07-16
+
+### Mac Host
+
+- Added logical response payload sizes to Mobile Debug request rows and copied logs, while preserving compatibility with older persisted entries.
+- Added a compact watched-session status endpoint backed by persisted monotonic content revisions, keeping transient reasoning updates independent from full transcript serialization.
+
+### iOS
+
+- Replaced one-second full-session-list polling with batched lightweight status polling and targeted authoritative session refreshes only after content changes, including queued turns that start without an idle gap.
+- Added automatic full-list polling fallback for older hosts that do not expose the additive status endpoint.
+
+## 2026-07-15
+
+### Mac Host
+
+- Fixed Commit & Push failures caused by truncated Foundation Models structured output by generating a plain-text subject without a response-token cutoff and retaining the existing 72-character sanitizer.
+
+## 2026-07-14
+
+### Mac Host
+
+- Added active IPv4/IPv6 listener addresses and per-address authenticated health checks to the Mobile Debug settings screen.
+- Prevented false “Address already in use” failures by waiting for listener cancellation before same-port API restarts and briefly retrying `EADDRINUSE`.
+- Prevented large session snapshots from stalling or being truncated by negotiating transparent `deflate` compression with iOS and draining each half-closed HTTP connection until the client closes it, while retaining the existing deadline for clients that stop reading.
+- Ordered project-document API results by newest modification time and raised the UTF-8 preview limit from 2 MB to 10 MB.
+- Fixed intermittent mobile connection timeouts by serializing response delivery on each Network.framework connection, tracking and closing accepted sockets across listener restarts, closing completed responses gracefully, and batching Mobile Debug publication and persistence outside the response path.
+- Prevented slow or abusive clients from starving the mobile API with global and per-source connection and handler limits, reserved health/status capacity, incremental per-connection parsing, and header, body, handler-response, and write deadlines. Accepted agent and command work intentionally continues after its client disconnects while remaining counted against bounded handler capacity.
+
+### iOS
+
+- Fixed intermittent foreground reconnection failures by coalescing connection and refresh work, ignoring canceled or stale responses, waiting for local-network connectivity, and retrying only safe reads after transient transport errors.
+- Bounded client networking to four concurrent requests, added exponential retry backoff with jitter and `Retry-After` support for safe reads, consolidated active-session polling into one snapshot request per second, and generation-guarded every asynchronous state mutation across disconnects and host switches.
+- Ordered Browse Files by newest modification time while remaining compatible with older hosts that do not provide timestamps, and added a remembered Sort menu for recency, name, or size.
+- Expanded completion notifications with the session title, project name, and a concise final-response or failure preview, and grouped related notifications by project.
+
 ## 2026-07-13
 
 ### Mac Host

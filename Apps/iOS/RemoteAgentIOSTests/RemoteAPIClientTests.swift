@@ -9,6 +9,130 @@ final class RemoteAPIClientTests: XCTestCase {
     super.tearDown()
   }
 
+  func testDefaultSessionWaitsForConnectivityAndAvoidsCachedResponses() {
+    let configuration = RemoteAPIClient.makeSessionConfiguration()
+
+    XCTAssertTrue(configuration.waitsForConnectivity)
+    XCTAssertEqual(configuration.timeoutIntervalForRequest, 8)
+    XCTAssertEqual(configuration.timeoutIntervalForResource, 30)
+    XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+    XCTAssertNil(configuration.urlCache)
+  }
+
+  func testSafeGETRetriesTransientConnectionFailure() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let attempts = LockedCounter()
+
+    MockURLProtocol.requestHandler = { request in
+      if attempts.increment() == 1 { throw URLError(.networkConnectionLost) }
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+        Data(#"{"status":"ok","version":"1"}"#.utf8)
+      )
+    }
+
+    let health = try await client.health()
+
+    XCTAssertEqual(health, HealthResponse(status: "ok", version: "1"))
+    XCTAssertEqual(attempts.value, 2)
+  }
+
+  func testSafeGETRetriesBusyResponseUsingRetryAfter() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration),
+      retryJitter: { _ in 0 }
+    )
+    let attempts = LockedCounter()
+
+    MockURLProtocol.requestHandler = { request in
+      let attempt = attempts.increment()
+      let status = attempt == 1 ? 503 : 200
+      let headers = attempt == 1 ? ["Retry-After": "0"] : nil
+      return (
+        HTTPURLResponse(
+          url: request.url!,
+          statusCode: status,
+          httpVersion: nil,
+          headerFields: headers
+        )!,
+        Data(#"{"status":"ok","version":"1"}"#.utf8)
+      )
+    }
+
+    let health = try await client.health()
+
+    XCTAssertEqual(health, HealthResponse(status: "ok", version: "1"))
+    XCTAssertEqual(attempts.value, 2)
+  }
+
+  func testRequestSchedulerBoundsConcurrentWorkAndDrainsWaitersFairly() async throws {
+    let scheduler = RemoteAPIRequestScheduler(maximumConcurrentRequests: 2)
+    let gate = AsyncTestGate()
+    let probe = SchedulerConcurrencyProbe()
+
+    let work = Task {
+      try await withThrowingTaskGroup(of: Void.self) { group in
+        for index in 0..<8 {
+          group.addTask {
+            try await scheduler.acquire()
+            await probe.enter(index: index)
+            await gate.wait()
+            await probe.leave()
+            await scheduler.release()
+          }
+        }
+        try await group.waitForAll()
+      }
+    }
+
+    await probe.waitUntilStarted(count: 2)
+    let initialMaximum = await probe.maximumActiveCount
+    XCTAssertEqual(initialMaximum, 2)
+    await gate.release()
+    try await work.value
+
+    let finalMaximum = await probe.maximumActiveCount
+    let startedIndexes = await probe.startedIndexes
+    XCTAssertEqual(finalMaximum, 2)
+    XCTAssertEqual(startedIndexes.sorted(), Array(0..<8))
+  }
+
+  func testMutationDoesNotRetryAfterAmbiguousConnectionFailure() async {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let attempts = LockedCounter()
+
+    MockURLProtocol.requestHandler = { _ in
+      _ = attempts.increment()
+      throw URLError(.networkConnectionLost)
+    }
+
+    do {
+      _ = try await client.sendMessage("Do not duplicate", sessionID: UUID())
+      XCTFail("Expected the mutation to fail")
+    } catch {
+      guard let remoteError = error as? RemoteAPIError else {
+        return XCTFail("Expected a RemoteAPIError")
+      }
+      guard case .unreachable = remoteError else {
+        return XCTFail("Expected an unreachable error")
+      }
+    }
+    XCTAssertEqual(attempts.value, 1)
+  }
+
   func testHealthAddsBearerToken() async throws {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [MockURLProtocol.self]
@@ -30,6 +154,54 @@ final class RemoteAPIClientTests: XCTestCase {
 
     let health = try await client.health()
     XCTAssertEqual(health, HealthResponse(status: "ok", version: "1"))
+  }
+
+  func testSessionStatusRequestsOnlyWatchedIDsAndDecodesLightweightState() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MockURLProtocol.self]
+    let client = RemoteAPIClient(
+      configuration: APIConfiguration(host: "mac.local", port: 8765, token: "token"),
+      session: URLSession(configuration: configuration)
+    )
+    let firstID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    let secondID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
+    MockURLProtocol.requestHandler = { request in
+      XCTAssertEqual(request.url?.path, RemoteAgentEndpoint.sessionStatus)
+      let components = try XCTUnwrap(
+        URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+      )
+      let ids = try XCTUnwrap(components.queryItems?.first(where: { $0.name == "ids" })?.value)
+      XCTAssertEqual(ids, "\(secondID.uuidString),\(firstID.uuidString)")
+      let data = Data(
+        """
+        [{
+          "id":"\(firstID.uuidString)",
+          "contentRevision":7,
+          "messageCount":42,
+          "updatedAt":"2026-07-16T12:00:00Z",
+          "isRunning":true,
+          "currentReasoning":"Checking the focused session.",
+          "isUnread":false,
+          "hasPendingProjectCommand":false,
+          "queuedPromptCount":1
+        }]
+        """.utf8
+      )
+      return (
+        HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!,
+        data
+      )
+    }
+
+    let statuses = try await client.sessionStatuses(ids: [firstID, secondID])
+
+    XCTAssertEqual(statuses.count, 1)
+    XCTAssertEqual(statuses.first?.id, firstID)
+    XCTAssertEqual(statuses.first?.contentRevision, 7)
+    XCTAssertEqual(statuses.first?.messageCount, 42)
+    XCTAssertEqual(statuses.first?.currentReasoning, "Checking the focused session.")
+    XCTAssertTrue(statuses.first?.hasActiveWork == true)
   }
 
   func testDecodesSessionAndFractionalDate() async throws {
@@ -75,6 +247,7 @@ final class RemoteAPIClientTests: XCTestCase {
     XCTAssertEqual(result.messages.first?.text, "Done")
     XCTAssertTrue(result.isRunning)
     XCTAssertEqual(result.currentReasoning, "Inspecting the session pipeline.")
+    XCTAssertEqual(result.contentRevision, 0)
     XCTAssertFalse(result.isUnread)
     XCTAssertFalse(result.isPinned)
   }
@@ -582,7 +755,7 @@ final class RemoteAPIClientTests: XCTestCase {
         "opaque project"
       )
       let data = Data(
-        #"[{"id":"readme","name":"README.md","relativePath":"README.md","kind":"markdown","byteCount":42},{"id":"source","name":"App.swift","relativePath":"Sources/App.swift","kind":"code","byteCount":128}]"#
+        #"[{"id":"readme","name":"README.md","relativePath":"README.md","kind":"markdown","byteCount":42,"modifiedAt":"2026-07-14T12:00:00Z"},{"id":"source","name":"App.swift","relativePath":"Sources/App.swift","kind":"code","byteCount":128}]"#
           .utf8
       )
       return (
@@ -594,8 +767,10 @@ final class RemoteAPIClientTests: XCTestCase {
     let documents = try await client.documents(projectID: "opaque project")
     XCTAssertEqual(documents.first?.name, "README.md")
     XCTAssertEqual(documents.first?.kind, .markdown)
+    XCTAssertEqual(documents.first?.modifiedAt, Date(timeIntervalSince1970: 1_784_030_400))
     XCTAssertEqual(documents.last?.relativePath, "Sources/App.swift")
     XCTAssertEqual(documents.last?.kind, .code)
+    XCTAssertNil(documents.last?.modifiedAt)
   }
 }
 
@@ -639,4 +814,57 @@ private final class MockURLProtocol: URLProtocol {
   }
 
   override func stopLoading() {}
+}
+
+private final class LockedCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage = 0
+
+  var value: Int {
+    lock.withLock { storage }
+  }
+
+  func increment() -> Int {
+    lock.withLock {
+      storage += 1
+      return storage
+    }
+  }
+}
+
+private actor AsyncTestGate {
+  private var isReleased = false
+  private var continuations: [CheckedContinuation<Void, Never>] = []
+
+  func wait() async {
+    guard !isReleased else { return }
+    await withCheckedContinuation { continuations.append($0) }
+  }
+
+  func release() {
+    isReleased = true
+    let waiting = continuations
+    continuations.removeAll()
+    for continuation in waiting { continuation.resume() }
+  }
+}
+
+private actor SchedulerConcurrencyProbe {
+  private var activeCount = 0
+  private(set) var maximumActiveCount = 0
+  private(set) var startedIndexes: [Int] = []
+
+  func enter(index: Int) {
+    activeCount += 1
+    maximumActiveCount = max(maximumActiveCount, activeCount)
+    startedIndexes.append(index)
+  }
+
+  func leave() {
+    activeCount -= 1
+  }
+
+  func waitUntilStarted(count: Int) async {
+    while startedIndexes.count < count { await Task.yield() }
+  }
 }

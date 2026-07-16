@@ -210,15 +210,6 @@ enum CommitMessageContext {
   }
 }
 
-#if canImport(FoundationModels)
-  @available(macOS 26.0, *)
-  @Generable
-  private struct GeneratedCommitSubject {
-    @Guide(description: "A single natural imperative Git subject under 72 characters")
-    var subject: String
-  }
-#endif
-
 struct FoundationCommitMessageGenerator: CommitMessageGenerating {
   func generate(stagedSummary: String, stagedDiff: String) async throws -> String {
     #if canImport(FoundationModels)
@@ -235,6 +226,11 @@ struct FoundationCommitMessageGenerator: CommitMessageGenerating {
   }
 
   #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    static var generationOptions: GenerationOptions {
+      GenerationOptions(sampling: .greedy)
+    }
+
     @available(macOS 26.0, *)
     private func generateWithFoundationModels(
       stagedSummary: String,
@@ -266,10 +262,9 @@ struct FoundationCommitMessageGenerator: CommitMessageGenerating {
           Changed paths:
           \(stagedSummary)
           """,
-        generating: GeneratedCommitSubject.self,
-        options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 20)
+        options: Self.generationOptions
       )
-      return try CommitMessageSanitizer.sanitize(response.content.subject)
+      return try CommitMessageSanitizer.sanitize(response.content)
     }
 
     @available(macOS 26.0, *)

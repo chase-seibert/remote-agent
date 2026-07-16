@@ -3,6 +3,405 @@ import XCTest
 
 @testable import RemoteAgentIOS
 
+final class CompletionNotificationContextTests: XCTestCase {
+  func testCompletionNotificationIncludesProjectSessionAndFinalResponse() {
+    let now = Date()
+    let session = AgentSession(
+      id: UUID(),
+      projectID: "remote-agent-ios",
+      projectPath: "/Users/example/projects/remote-agent-ios",
+      codexSessionID: nil,
+      title: "Improve app notifications",
+      createdAt: now,
+      updatedAt: now,
+      messages: [
+        AgentMessage(
+          id: UUID(),
+          role: .user,
+          text: "Add more context",
+          createdAt: now,
+          state: .complete
+        ),
+        AgentMessage(
+          id: UUID(),
+          role: .assistant,
+          text: "Added the project, session, and final response.\n\nEverything is ready.",
+          createdAt: now,
+          state: .complete
+        ),
+      ],
+      isRunning: false
+    )
+
+    let context = CompletionNotificationContext(session: session)
+
+    XCTAssertEqual(context.title, "Agent finished")
+    XCTAssertEqual(context.subtitle, "Improve app notifications")
+    XCTAssertEqual(
+      context.body,
+      "Project: remote-agent-ios\nAdded the project, session, and final response. Everything is ready."
+    )
+  }
+
+  func testFailedNotificationShowsFailureDetails() {
+    let now = Date()
+    let session = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "Run integration tests",
+      createdAt: now,
+      updatedAt: now,
+      messages: [
+        AgentMessage(
+          id: UUID(),
+          role: .system,
+          text: "The test runner could not connect to the simulator.",
+          createdAt: now,
+          state: .failed
+        )
+      ],
+      isRunning: false
+    )
+
+    let context = CompletionNotificationContext(session: session)
+
+    XCTAssertEqual(context.title, "Agent failed")
+    XCTAssertEqual(context.subtitle, "Run integration tests")
+    XCTAssertEqual(
+      context.body,
+      "Project: project\nThe test runner could not connect to the simulator."
+    )
+  }
+
+  func testCompletionNotificationFallsBackToRequestContext() {
+    let now = Date()
+    let session = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "Pending response",
+      createdAt: now,
+      updatedAt: now,
+      messages: [
+        AgentMessage(
+          id: UUID(),
+          role: .user,
+          text: "Explain how background polling works",
+          createdAt: now,
+          state: .complete
+        )
+      ],
+      isRunning: false
+    )
+
+    let context = CompletionNotificationContext(session: session)
+
+    XCTAssertEqual(
+      context.body,
+      "Project: project\nRequest: Explain how background polling works"
+    )
+  }
+
+  func testCompletionNotificationPreviewIsConcise() {
+    let now = Date()
+    let session = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "Long response",
+      createdAt: now,
+      updatedAt: now,
+      messages: [
+        AgentMessage(
+          id: UUID(),
+          role: .assistant,
+          text: String(repeating: "context ", count: 100),
+          createdAt: now,
+          state: .complete
+        )
+      ],
+      isRunning: false
+    )
+
+    let context = CompletionNotificationContext(session: session)
+    let preview = context.body.components(separatedBy: "\n").last ?? ""
+
+    XCTAssertLessThanOrEqual(preview.count, 240)
+    XCTAssertTrue(preview.hasSuffix("…"))
+  }
+}
+
+@MainActor
+final class ConnectionLifecycleTests: XCTestCase {
+  func testRepeatedForegroundActivationCoalescesRefresh() async throws {
+    let context = makeContext()
+
+    context.model.sceneActivityChanged(isActive: true)
+    await context.client.waitUntilHealthRequestStarts()
+    context.model.sceneActivityChanged(isActive: true)
+    await Task.yield()
+
+    let healthRequestCount = await context.client.healthRequestCount
+    XCTAssertEqual(healthRequestCount, 1)
+
+    await context.client.releaseHealthRequests()
+    try await context.client.waitUntilSnapshotLoads()
+
+    let projectRequestCount = await context.client.projectRequestCount
+    let sessionRequestCount = await context.client.sessionRequestCount
+    XCTAssertEqual(projectRequestCount, 1)
+    XCTAssertEqual(sessionRequestCount, 1)
+    XCTAssertTrue(context.model.connectionState.isConnected)
+  }
+
+  func testDisconnectPreventsSuspendedRefreshFromOverwritingState() async {
+    let context = makeContext()
+
+    context.model.sceneActivityChanged(isActive: true)
+    await context.client.waitUntilHealthRequestStarts()
+    context.model.disconnect()
+    await context.client.releaseHealthRequests()
+    for _ in 0..<10 { await Task.yield() }
+
+    let projectRequestCount = await context.client.projectRequestCount
+    let sessionRequestCount = await context.client.sessionRequestCount
+    XCTAssertEqual(context.model.connectionState, .disconnected)
+    XCTAssertEqual(projectRequestCount, 0)
+    XCTAssertEqual(sessionRequestCount, 0)
+  }
+
+  func testDisconnectPreventsSuspendedSessionMutationFromOverwritingState() async {
+    let context = makeContext()
+    let originalTitle = context.model.selectedSession?.title
+
+    let rename = Task {
+      await context.model.renameSession(
+        context.model.selectedSessionID!,
+        title: "Response from the old Mac"
+      )
+    }
+    await context.client.waitUntilRenameStarts()
+    context.model.disconnect()
+    await context.client.releaseRenameRequest()
+
+    let didRename = await rename.value
+    XCTAssertFalse(didRename)
+    XCTAssertEqual(context.model.selectedSession?.title, originalTitle)
+    XCTAssertEqual(context.model.connectionState, .disconnected)
+    XCTAssertNil(context.model.presentedError)
+  }
+
+  func testPollingMultipleRunningSessionsUsesOneStatusRequestPerTick() async throws {
+    let now = Date()
+    let first = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "First",
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      isRunning: false
+    )
+    let second = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "Second",
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      isRunning: false
+    )
+    let project = AgentProject(id: "project", name: "Project", path: "/project")
+    let client = DeferredLifecycleAPIClient(project: project, session: first)
+    let suite = "ConnectionLifecycleTests.Polling.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let model = AppModel(
+      testConfiguration: APIConfiguration(host: "test.local", port: 8765, token: "token"),
+      client: client,
+      sessions: [first, second],
+      draftStore: DraftStore(defaults: defaults),
+      completionNotifications: BadgeRecordingNotificationService()
+    )
+
+    let sentFirst = await model.sendPrompt("Run first", to: first.id)
+    let sentSecond = await model.sendPrompt("Run second", to: second.id)
+    XCTAssertTrue(sentFirst)
+    XCTAssertTrue(sentSecond)
+    try await client.waitUntilStatusRequestCount(1)
+    try await Task.sleep(for: .milliseconds(100))
+
+    let statusRequestCount = await client.statusRequestCount
+    let requestedStatusIDs = await client.requestedStatusIDs
+    let sessionRequestCount = await client.sessionRequestCount
+    XCTAssertEqual(statusRequestCount, 1)
+    XCTAssertEqual(Set(requestedStatusIDs.first ?? []), Set([first.id, second.id]))
+    XCTAssertEqual(sessionRequestCount, 0)
+    model.disconnect()
+  }
+
+  func testReasoningUsesStatusAndQueuedTurnRefreshesWithoutStoppingPolling() async throws {
+    let now = Date()
+    let running = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "Focused polling",
+      createdAt: now,
+      updatedAt: now,
+      messages: [
+        AgentMessage(
+          id: UUID(),
+          role: .user,
+          text: "Run the task",
+          createdAt: now,
+          state: .complete
+        )
+      ],
+      isRunning: true,
+      contentRevision: 1
+    )
+    let client = StatusPollingAPIClient(session: running)
+    let suite = "ConnectionLifecycleTests.StatusPolling.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let model = AppModel(
+      testConfiguration: APIConfiguration(host: "test.local", port: 8765, token: "token"),
+      client: client,
+      sessions: [running],
+      draftStore: DraftStore(defaults: defaults),
+      completionNotifications: BadgeRecordingNotificationService()
+    )
+    model.selectSession(running.id)
+
+    try await client.waitUntilStatusRequestCount(1)
+    let transcriptRequestsWhileReasoning = await client.sessionRequestCount
+    XCTAssertEqual(model.selectedSession?.currentReasoning, "Checking the focused session.")
+    XCTAssertEqual(transcriptRequestsWhileReasoning, 0)
+
+    await client.advanceToQueuedTurn()
+    try await client.waitUntilSessionRequestCount(1)
+    for _ in 0..<100 {
+      if model.selectedSession?.messages.last?.text == "Queued follow up" { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(model.selectedSession?.isRunning == true)
+    XCTAssertEqual(model.selectedSession?.messages.last?.text, "Queued follow up")
+
+    await client.completeTurn()
+    try await client.waitUntilSessionRequestCount(2)
+    for _ in 0..<100 {
+      if model.selectedSession?.isRunning == false { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+
+    let completedTranscriptRequests = await client.sessionRequestCount
+    XCTAssertFalse(model.selectedSession?.isRunning ?? true)
+    XCTAssertEqual(model.selectedSession?.messages.last?.text, "Finished")
+    XCTAssertEqual(completedTranscriptRequests, 2)
+    model.disconnect()
+  }
+
+  func testMissingStatusEndpointFallsBackToFullSessionSnapshot() async throws {
+    let now = Date()
+    let running = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "Legacy host",
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      isRunning: true
+    )
+    let completed = AgentSession(
+      id: running.id,
+      projectID: running.projectID,
+      projectPath: running.projectPath,
+      codexSessionID: nil,
+      title: running.title,
+      createdAt: running.createdAt,
+      updatedAt: now.addingTimeInterval(1),
+      messages: [
+        AgentMessage(
+          id: UUID(),
+          role: .assistant,
+          text: "Legacy host finished",
+          createdAt: now.addingTimeInterval(1),
+          state: .complete
+        )
+      ],
+      isRunning: false
+    )
+    let client = LegacyPollingAPIClient(session: completed)
+    let suite = "ConnectionLifecycleTests.LegacyPolling.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let model = AppModel(
+      testConfiguration: APIConfiguration(host: "test.local", port: 8765, token: "token"),
+      client: client,
+      sessions: [running],
+      draftStore: DraftStore(defaults: defaults),
+      completionNotifications: BadgeRecordingNotificationService()
+    )
+    model.selectSession(running.id)
+
+    try await client.waitUntilFullSnapshotRequest()
+    for _ in 0..<100 {
+      if model.selectedSession?.isRunning == false { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+
+    let statusRequests = await client.statusRequestCount
+    let fullSnapshotRequests = await client.fullSnapshotRequestCount
+    XCTAssertEqual(statusRequests, 1)
+    XCTAssertEqual(fullSnapshotRequests, 1)
+    XCTAssertEqual(model.selectedSession?.messages.last?.text, "Legacy host finished")
+    model.disconnect()
+  }
+
+  private func makeContext() -> (
+    model: AppModel,
+    client: DeferredLifecycleAPIClient
+  ) {
+    let suite = "ConnectionLifecycleTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+    let now = Date()
+    let session = AgentSession(
+      id: UUID(),
+      projectID: "project",
+      projectPath: "/project",
+      codexSessionID: nil,
+      title: "Connection lifecycle",
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      isRunning: false
+    )
+    let project = AgentProject(id: "project", name: "Project", path: "/project")
+    let client = DeferredLifecycleAPIClient(project: project, session: session)
+    let model = AppModel(
+      testConfiguration: APIConfiguration(host: "test.local", port: 8765, token: "token"),
+      client: client,
+      sessions: [session],
+      draftStore: DraftStore(defaults: defaults),
+      completionNotifications: BadgeRecordingNotificationService()
+    )
+    return (model, client)
+  }
+}
+
 final class ActivityOrderingTests: XCTestCase {
   func testPendingProjectCommandCountsAsActiveWork() {
     let now = Date()
@@ -479,6 +878,359 @@ private actor BadgeRecordingNotificationService: CompletionNotificationServing {
   func notifyCompletion(for session: AgentSession) async {}
 }
 
+private actor DeferredLifecycleAPIClient: RemoteAPIClientProtocol {
+  private let project: AgentProject
+  private let storedSession: AgentSession
+  private var holdHealthRequests = true
+  private var healthContinuations: [CheckedContinuation<Void, Never>] = []
+  private var renameContinuation: CheckedContinuation<Void, Never>?
+  private var renameStarted = false
+  private(set) var healthRequestCount = 0
+  private(set) var projectRequestCount = 0
+  private(set) var sessionRequestCount = 0
+  private(set) var statusRequestCount = 0
+  private(set) var requestedStatusIDs: [[UUID]] = []
+
+  init(project: AgentProject, session: AgentSession) {
+    self.project = project
+    storedSession = session
+  }
+
+  func health() async throws -> HealthResponse {
+    healthRequestCount += 1
+    if holdHealthRequests {
+      await withCheckedContinuation { healthContinuations.append($0) }
+    }
+    return HealthResponse(status: "ok", version: "test")
+  }
+
+  func projects() async throws -> [AgentProject] {
+    projectRequestCount += 1
+    return [project]
+  }
+
+  func sessions(projectID _: String?) async throws -> [AgentSession] {
+    sessionRequestCount += 1
+    return [storedSession]
+  }
+
+  func sessionStatuses(ids: [UUID]) async throws -> [SessionStatusSnapshot] {
+    statusRequestCount += 1
+    requestedStatusIDs.append(ids)
+    return ids.map { id in
+      SessionStatusSnapshot(
+        id: id,
+        contentRevision: storedSession.contentRevision,
+        messageCount: storedSession.messages.count,
+        updatedAt: storedSession.updatedAt,
+        isRunning: storedSession.isRunning,
+        currentReasoning: storedSession.currentReasoning,
+        isUnread: storedSession.isUnread,
+        hasPendingProjectCommand: storedSession.hasPendingProjectCommand,
+        queuedPromptCount: storedSession.queuedPrompts.count
+      )
+    }
+  }
+
+  func waitUntilHealthRequestStarts() async {
+    while healthRequestCount == 0 { await Task.yield() }
+  }
+
+  func releaseHealthRequests() {
+    holdHealthRequests = false
+    let continuations = healthContinuations
+    healthContinuations = []
+    for continuation in continuations {
+      continuation.resume()
+    }
+  }
+
+  func waitUntilSnapshotLoads() async throws {
+    for _ in 0..<100 {
+      if projectRequestCount > 0, sessionRequestCount > 0 { return }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    throw RemoteAPIError.unreachable("Timed out waiting for the snapshot")
+  }
+
+  func waitUntilSessionRequestCount(_ expectedCount: Int) async throws {
+    for _ in 0..<200 {
+      if sessionRequestCount >= expectedCount { return }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    throw RemoteAPIError.unreachable("Timed out waiting for session polling")
+  }
+
+  func waitUntilStatusRequestCount(_ expectedCount: Int) async throws {
+    for _ in 0..<200 {
+      if statusRequestCount >= expectedCount { return }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    throw RemoteAPIError.unreachable("Timed out waiting for status polling")
+  }
+
+  func session(id _: UUID) async throws -> AgentSession { storedSession }
+  func renameSession(id _: UUID, title: String) async throws -> AgentSession {
+    renameStarted = true
+    await withCheckedContinuation { renameContinuation = $0 }
+    return AgentSession(
+      id: storedSession.id,
+      projectID: storedSession.projectID,
+      projectPath: storedSession.projectPath,
+      codexSessionID: storedSession.codexSessionID,
+      title: title,
+      createdAt: storedSession.createdAt,
+      updatedAt: storedSession.updatedAt,
+      messages: storedSession.messages,
+      isRunning: storedSession.isRunning,
+      currentReasoning: storedSession.currentReasoning,
+      isUnread: storedSession.isUnread,
+      isPinned: storedSession.isPinned,
+      selectedMakeTarget: storedSession.selectedMakeTarget,
+      queuedPrompts: storedSession.queuedPrompts,
+      contentRevision: storedSession.contentRevision
+    )
+  }
+
+  func waitUntilRenameStarts() async {
+    while !renameStarted { await Task.yield() }
+  }
+
+  func releaseRenameRequest() {
+    renameContinuation?.resume()
+    renameContinuation = nil
+  }
+  func setSessionPinned(id _: UUID, isPinned _: Bool) async throws -> AgentSession {
+    storedSession
+  }
+  func deleteSession(id _: UUID) async throws -> AgentSession { storedSession }
+  func markSessionRead(id _: UUID) async throws -> AgentSession { storedSession }
+  func documents(projectID _: String) async throws -> [ProjectDocument] { [] }
+  func documentContent(projectID _: String, documentID _: String) async throws
+    -> ProjectDocumentContent
+  {
+    throw RemoteAPIError.invalidData
+  }
+  func createSession(projectID _: String) async throws -> AgentSession { storedSession }
+  func sendMessage(_: String, sessionID: UUID) async throws -> AcceptedResponse {
+    AcceptedResponse(sessionID: sessionID, status: "accepted")
+  }
+}
+
+private actor StatusPollingAPIClient: RemoteAPIClientProtocol {
+  private var storedSession: AgentSession
+  private(set) var statusRequestCount = 0
+  private(set) var sessionRequestCount = 0
+
+  init(session: AgentSession) {
+    storedSession = session
+    storedSession.currentReasoning = "Checking the focused session."
+  }
+
+  func sessionStatuses(ids: [UUID]) async throws -> [SessionStatusSnapshot] {
+    statusRequestCount += 1
+    guard ids.contains(storedSession.id) else { return [] }
+    return [
+      SessionStatusSnapshot(
+        id: storedSession.id,
+        contentRevision: storedSession.contentRevision,
+        messageCount: storedSession.messages.count,
+        updatedAt: storedSession.updatedAt,
+        isRunning: storedSession.isRunning,
+        currentReasoning: storedSession.currentReasoning,
+        isUnread: storedSession.isUnread,
+        hasPendingProjectCommand: storedSession.hasPendingProjectCommand,
+        queuedPromptCount: storedSession.queuedPrompts.count
+      )
+    ]
+  }
+
+  func session(id: UUID) async throws -> AgentSession {
+    guard id == storedSession.id else { throw RemoteAPIError.invalidData }
+    sessionRequestCount += 1
+    return storedSession
+  }
+
+  func completeTurn() {
+    var messages = storedSession.messages
+    let completedAt = storedSession.updatedAt.addingTimeInterval(1)
+    messages.append(
+      AgentMessage(
+        id: UUID(),
+        role: .assistant,
+        text: "Finished",
+        createdAt: completedAt,
+        state: .complete
+      )
+    )
+    storedSession = replacingStoredSession(
+      messages: messages,
+      updatedAt: completedAt,
+      isRunning: false,
+      currentReasoning: nil,
+      contentRevision: storedSession.contentRevision &+ 1
+    )
+  }
+
+  func advanceToQueuedTurn() {
+    let completedAt = storedSession.updatedAt.addingTimeInterval(1)
+    var messages = storedSession.messages
+    messages.append(
+      AgentMessage(
+        id: UUID(),
+        role: .assistant,
+        text: "First finished",
+        createdAt: completedAt,
+        state: .complete
+      )
+    )
+    messages.append(
+      AgentMessage(
+        id: UUID(),
+        role: .user,
+        text: "Queued follow up",
+        createdAt: completedAt,
+        state: .complete
+      )
+    )
+    storedSession = replacingStoredSession(
+      messages: messages,
+      updatedAt: completedAt,
+      isRunning: true,
+      currentReasoning: "Starting the queued follow up.",
+      contentRevision: storedSession.contentRevision &+ 1
+    )
+  }
+
+  private func replacingStoredSession(
+    messages: [AgentMessage],
+    updatedAt: Date,
+    isRunning: Bool,
+    currentReasoning: String?,
+    contentRevision: UInt64
+  ) -> AgentSession {
+    AgentSession(
+      id: storedSession.id,
+      projectID: storedSession.projectID,
+      projectPath: storedSession.projectPath,
+      codexSessionID: storedSession.codexSessionID,
+      title: storedSession.title,
+      createdAt: storedSession.createdAt,
+      updatedAt: updatedAt,
+      messages: messages,
+      isRunning: isRunning,
+      currentReasoning: currentReasoning,
+      isUnread: storedSession.isUnread,
+      isPinned: storedSession.isPinned,
+      selectedMakeTarget: storedSession.selectedMakeTarget,
+      queuedPrompts: storedSession.queuedPrompts,
+      contentRevision: contentRevision
+    )
+  }
+
+  func waitUntilStatusRequestCount(_ expectedCount: Int) async throws {
+    for _ in 0..<300 {
+      if statusRequestCount >= expectedCount { return }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    throw RemoteAPIError.unreachable("Timed out waiting for status polling")
+  }
+
+  func waitUntilSessionRequestCount(_ expectedCount: Int) async throws {
+    for _ in 0..<300 {
+      if sessionRequestCount >= expectedCount { return }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    throw RemoteAPIError.unreachable("Timed out waiting for a targeted session refresh")
+  }
+
+  func health() async throws -> HealthResponse { throw RemoteAPIError.invalidData }
+  func projects() async throws -> [AgentProject] { throw RemoteAPIError.invalidData }
+  func sessions(projectID _: String?) async throws -> [AgentSession] {
+    throw RemoteAPIError.invalidData
+  }
+  func renameSession(id _: UUID, title _: String) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func setSessionPinned(id _: UUID, isPinned _: Bool) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func deleteSession(id _: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
+  func markSessionRead(id _: UUID) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func documents(projectID _: String) async throws -> [ProjectDocument] {
+    throw RemoteAPIError.invalidData
+  }
+  func documentContent(projectID _: String, documentID _: String) async throws
+    -> ProjectDocumentContent
+  {
+    throw RemoteAPIError.invalidData
+  }
+  func createSession(projectID _: String) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func sendMessage(_: String, sessionID _: UUID) async throws -> AcceptedResponse {
+    throw RemoteAPIError.invalidData
+  }
+}
+
+private actor LegacyPollingAPIClient: RemoteAPIClientProtocol {
+  private let storedSession: AgentSession
+  private(set) var statusRequestCount = 0
+  private(set) var fullSnapshotRequestCount = 0
+
+  init(session: AgentSession) {
+    storedSession = session
+  }
+
+  func sessionStatuses(ids _: [UUID]) async throws -> [SessionStatusSnapshot] {
+    statusRequestCount += 1
+    throw RemoteAPIError.http(status: 404, detail: "Route not found")
+  }
+
+  func sessions(projectID _: String?) async throws -> [AgentSession] {
+    fullSnapshotRequestCount += 1
+    return [storedSession]
+  }
+
+  func waitUntilFullSnapshotRequest() async throws {
+    for _ in 0..<300 {
+      if fullSnapshotRequestCount > 0 { return }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    throw RemoteAPIError.unreachable("Timed out waiting for legacy full-session polling")
+  }
+
+  func health() async throws -> HealthResponse { throw RemoteAPIError.invalidData }
+  func projects() async throws -> [AgentProject] { throw RemoteAPIError.invalidData }
+  func session(id _: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
+  func renameSession(id _: UUID, title _: String) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func setSessionPinned(id _: UUID, isPinned _: Bool) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func deleteSession(id _: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
+  func markSessionRead(id _: UUID) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func documents(projectID _: String) async throws -> [ProjectDocument] {
+    throw RemoteAPIError.invalidData
+  }
+  func documentContent(projectID _: String, documentID _: String) async throws
+    -> ProjectDocumentContent
+  {
+    throw RemoteAPIError.invalidData
+  }
+  func createSession(projectID _: String) async throws -> AgentSession {
+    throw RemoteAPIError.invalidData
+  }
+  func sendMessage(_: String, sessionID _: UUID) async throws -> AcceptedResponse {
+    throw RemoteAPIError.invalidData
+  }
+}
+
 private actor UnreadBadgeAPIClient: RemoteAPIClientProtocol {
   let updatedSession: AgentSession
   private(set) var markedUnreadSessionIDs: [UUID] = []
@@ -546,7 +1298,9 @@ private actor ForegroundUnreadAPIClient: RemoteAPIClientProtocol {
     return storedSession
   }
 
-  func health() async throws -> HealthResponse { throw RemoteAPIError.invalidData }
+  func health() async throws -> HealthResponse {
+    HealthResponse(status: "ok", version: "test")
+  }
   func session(id: UUID) async throws -> AgentSession { throw RemoteAPIError.invalidData }
   func renameSession(id: UUID, title: String) async throws -> AgentSession {
     throw RemoteAPIError.invalidData
@@ -757,14 +1511,40 @@ final class ProjectLinkResolverTests: XCTestCase {
 final class ProjectDocumentBrowsingTests: XCTestCase {
   func testBrowserIncludesDocumentationButNotCode() {
     let documents = [
-      makeDocument(path: "README.md", kind: .markdown),
-      makeDocument(path: "docs/report.html", kind: .html),
-      makeDocument(path: "Sources/App.swift", kind: .code),
+      makeDocument(
+        path: "README.md", kind: .markdown, modifiedAt: Date(timeIntervalSince1970: 100)),
+      makeDocument(
+        path: "docs/report.html", kind: .html, modifiedAt: Date(timeIntervalSince1970: 300)),
+      makeDocument(
+        path: "Sources/App.swift", kind: .code, modifiedAt: Date(timeIntervalSince1970: 400)),
     ]
 
     XCTAssertEqual(
       documents.browsable.map(\.relativePath),
-      ["README.md", "docs/report.html"]
+      ["docs/report.html", "README.md"]
+    )
+  }
+
+  func testBrowserSupportsManualNameAndSizeSorting() {
+    let documents = [
+      makeDocument(
+        path: "z-last.md", kind: .markdown, byteCount: 100,
+        modifiedAt: Date(timeIntervalSince1970: 300)),
+      makeDocument(
+        path: "a-first.html", kind: .html, byteCount: 300,
+        modifiedAt: Date(timeIntervalSince1970: 100)),
+      makeDocument(
+        path: "middle.md", kind: .markdown, byteCount: 200,
+        modifiedAt: Date(timeIntervalSince1970: 200)),
+    ]
+
+    XCTAssertEqual(
+      documents.browsable(sortedBy: .name).map(\.relativePath),
+      ["a-first.html", "middle.md", "z-last.md"]
+    )
+    XCTAssertEqual(
+      documents.browsable(sortedBy: .size).map(\.relativePath),
+      ["a-first.html", "middle.md", "z-last.md"]
     )
   }
 
@@ -790,13 +1570,19 @@ final class ProjectDocumentBrowsingTests: XCTestCase {
     XCTAssertEqual(linkedDocument, code)
   }
 
-  private func makeDocument(path: String, kind: ProjectDocumentKind) -> ProjectDocument {
+  private func makeDocument(
+    path: String,
+    kind: ProjectDocumentKind,
+    byteCount: Int = 42,
+    modifiedAt: Date? = nil
+  ) -> ProjectDocument {
     ProjectDocument(
       id: path,
       name: (path as NSString).lastPathComponent,
       relativePath: path,
       kind: kind,
-      byteCount: 42
+      byteCount: byteCount,
+      modifiedAt: modifiedAt
     )
   }
 }

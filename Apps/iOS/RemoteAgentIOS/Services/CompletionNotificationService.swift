@@ -7,6 +7,51 @@ protocol CompletionNotificationServing: Sendable {
   func notifyCompletion(for session: AgentSession) async
 }
 
+struct CompletionNotificationContext: Equatable, Sendable {
+  let title: String
+  let subtitle: String
+  let body: String
+
+  init(session: AgentSession) {
+    let finalMessage = session.messages.last.flatMap { message in
+      message.role != .user && message.state != .pending && !message.text.isEmpty
+        ? message : nil
+    }
+    let failed = session.messages.last?.state == .failed
+    let projectName = URL(fileURLWithPath: session.projectPath).lastPathComponent
+
+    title = failed ? "Agent failed" : "Agent finished"
+    subtitle = session.title
+
+    var bodyLines = ["Project: \(projectName.isEmpty ? session.projectID : projectName)"]
+    if let finalMessage, let preview = Self.preview(finalMessage.text) {
+      bodyLines.append(preview)
+    } else if let request = session.messages.last(where: { $0.role == .user }),
+      let preview = Self.preview(request.text)
+    {
+      bodyLines.append("Request: \(preview)")
+    }
+    body = bodyLines.joined(separator: "\n")
+  }
+
+  private static func preview(_ text: String) -> String? {
+    let normalized =
+      text
+      .split(whereSeparator: { $0.isWhitespace })
+      .joined(separator: " ")
+    guard !normalized.isEmpty else { return nil }
+
+    let limit = 240
+    guard normalized.count > limit else { return normalized }
+
+    let candidate = normalized.prefix(limit - 1)
+    if let lastWhitespace = candidate.lastIndex(where: { $0.isWhitespace }) {
+      return String(candidate[..<lastWhitespace]) + "…"
+    }
+    return String(candidate) + "…"
+  }
+}
+
 actor CompletionNotificationService: CompletionNotificationServing {
   private let center = UNUserNotificationCenter.current()
 
@@ -34,13 +79,18 @@ actor CompletionNotificationService: CompletionNotificationServing {
         || settings.authorizationStatus == .provisional
     else { return }
 
-    let failed = session.messages.last?.state == .failed
-    let projectName = URL(fileURLWithPath: session.projectPath).lastPathComponent
+    let context = CompletionNotificationContext(session: session)
     let content = UNMutableNotificationContent()
-    content.title = failed ? "Agent failed" : "Agent finished"
-    content.body = "\(session.title) in \(projectName)"
+    content.title = context.title
+    content.subtitle = context.subtitle
+    content.body = context.body
     content.sound = .default
-    content.userInfo = ["sessionID": session.id.uuidString]
+    content.threadIdentifier = "project-\(session.projectID)"
+    content.targetContentIdentifier = session.id.uuidString
+    content.userInfo = [
+      "sessionID": session.id.uuidString,
+      "projectID": session.projectID,
+    ]
 
     let version = Int(session.updatedAt.timeIntervalSince1970)
     let request = UNNotificationRequest(

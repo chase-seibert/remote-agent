@@ -1,7 +1,8 @@
 import Foundation
 
 struct ProjectDocumentService: Sendable {
-  static let maximumByteCount = 2 * 1_024 * 1_024
+  static let maximumByteCount = 10 * 1_024 * 1_024
+  static let maximumSizeDescription = "10 MB"
 
   func list(projectPath: String) async throws -> [ProjectDocument] {
     try await Task.detached {
@@ -16,7 +17,8 @@ struct ProjectDocumentService: Sendable {
         throw RemoteAgentError.invalidRequest("Document not found")
       }
       guard document.byteCount <= Self.maximumByteCount else {
-        throw RemoteAgentError.invalidRequest("Document is larger than 2 MB")
+        throw RemoteAgentError.invalidRequest(
+          "Document is larger than \(Self.maximumSizeDescription)")
       }
 
       let rootURL = URL(fileURLWithPath: projectPath, isDirectory: true)
@@ -36,7 +38,9 @@ struct ProjectDocumentService: Sendable {
   private static func scan(projectPath: String) throws -> [ProjectDocument] {
     let rootURL = URL(fileURLWithPath: projectPath, isDirectory: true)
       .resolvingSymlinksInPath().standardizedFileURL
-    let resourceKeys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
+    let resourceKeys: Set<URLResourceKey> = [
+      .isDirectoryKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey,
+    ]
     guard
       let enumerator = FileManager.default.enumerator(
         at: rootURL,
@@ -76,12 +80,23 @@ struct ProjectDocumentService: Sendable {
           name: fileURL.lastPathComponent,
           relativePath: relativePath,
           kind: kind,
-          byteCount: values.fileSize ?? 0
+          byteCount: values.fileSize ?? 0,
+          modifiedAt: values.contentModificationDate
         ))
     }
 
     return documents.sorted {
-      $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
+      switch ($0.modifiedAt, $1.modifiedAt) {
+      case (let leftDate?, let rightDate?) where leftDate != rightDate:
+        return leftDate > rightDate
+      case (_?, nil):
+        return true
+      case (nil, _?):
+        return false
+      default:
+        return $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath)
+          == .orderedAscending
+      }
     }
   }
 

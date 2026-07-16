@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Network
 import RemoteAgentProtocol
 
 private struct APIErrorBody: Codable { let error: String }
@@ -22,6 +23,9 @@ final class AppModel: ObservableObject {
   @Published var selectedSessionID: UUID?
   @Published var isShowingNewSessionPicker = false
   @Published private(set) var apiStatus = "API stopped"
+  @Published private(set) var apiListeningPort: UInt16?
+  @Published private(set) var apiListenerAddresses: [APIListenerAddress] = []
+  @Published private(set) var apiHealthTestStates: [String: APIHealthTestState] = [:]
   @Published private(set) var crashRelaunchStatus = "Not configured"
   @Published private(set) var apiActivityLog: [APIActivityEntry] = []
   @Published private(set) var projectCommandResults: [UUID: ProjectCommandResult] = [:]
@@ -36,9 +40,17 @@ final class AppModel: ObservableObject {
   private let scanner = ProjectScanner()
   private let codex: any CodexSending
   private let documents = ProjectDocumentService()
+  private let advertisesAPIWithBonjour: Bool
   private var apiServer: RemoteAPIServer?
-  private var apiRestartTask: Task<Void, Never>?
+  private var apiServerAttemptID: UUID?
+  private var apiLifecycleTask: Task<Void, Never>?
+  private var apiRestartDebounceTask: Task<Void, Never>?
+  private var apiActivityPersistenceTask: Task<Void, Never>?
+  private lazy var apiActivityBatcher = APIActivityBatcher { [weak self] entries in
+    await self?.appendAPIActivity(entries)
+  }
   private var apiGeneration = 0
+  private var apiHealthTestIDs: [String: UUID] = [:]
   private var didStart = false
 
   init(
@@ -47,7 +59,8 @@ final class AppModel: ObservableObject {
     activityStore: APIActivityStore = APIActivityStore(),
     projectCommandResultStore: ProjectCommandResultStore = ProjectCommandResultStore(),
     projectCommands: ProjectCommandService = ProjectCommandService(),
-    codex: any CodexSending = CodexCLIClient()
+    codex: any CodexSending = CodexCLIClient(),
+    advertisesAPIWithBonjour: Bool = true
   ) {
     self.settings = settings
     self.store = store
@@ -55,6 +68,7 @@ final class AppModel: ObservableObject {
     self.projectCommandResultStore = projectCommandResultStore
     self.projectCommands = projectCommands
     self.codex = codex
+    self.advertisesAPIWithBonjour = advertisesAPIWithBonjour
   }
 
   var selectedProject: AgentProject? {
@@ -85,13 +99,19 @@ final class AppModel: ObservableObject {
     do {
       sessions = try await store.load()
       for index in sessions.indices {
+        var contentChanged = false
+        if sessions[index].isRunning {
+          contentChanged = true
+        }
         sessions[index].isRunning = false
         sessions[index].currentReasoning = nil
         if sessions[index].selectedMakeTarget == nil {
           sessions[index].selectedMakeTarget = settings.selectedMakeTarget(
             sessionID: sessions[index].id
           )
+          contentChanged = sessions[index].selectedMakeTarget != nil || contentChanged
         }
+        if contentChanged { sessions[index].recordContentChange() }
       }
       persist()
     } catch {
@@ -115,6 +135,7 @@ final class AppModel: ObservableObject {
             "\(result.title) was interrupted. Click to view output."
           sessions[sessionIndex].messages[messageIndex].state = .failed
           sessions[sessionIndex].updatedAt = completedAt
+          sessions[sessionIndex].recordContentChange()
         }
         return ProjectCommandResult(
           id: result.id,
@@ -137,6 +158,7 @@ final class AppModel: ObservableObject {
           sessions[sessionIndex].messages[messageIndex].projectCommandResultID == nil
         else { continue }
         sessions[sessionIndex].messages[messageIndex].projectCommandResultID = result.id
+        sessions[sessionIndex].recordContentChange()
         linkedLegacyCommandMessage = true
       }
       projectCommandResults = Dictionary(
@@ -228,6 +250,7 @@ final class AppModel: ObservableObject {
       sessions[index].isUnread
     else { return }
     sessions[index].isUnread = false
+    sessions[index].recordContentChange()
     persist()
   }
 
@@ -236,6 +259,7 @@ final class AppModel: ObservableObject {
       !sessions[index].isUnread
     else { return }
     sessions[index].isUnread = true
+    sessions[index].recordContentChange()
     persist()
   }
 
@@ -263,7 +287,9 @@ final class AppModel: ObservableObject {
     guard let index = sessions.firstIndex(where: { $0.id == id }) else {
       throw RemoteAgentError.sessionNotFound
     }
+    guard sessions[index].isPinned != isPinned else { return sessions[index] }
     sessions[index].isPinned = isPinned
+    sessions[index].recordContentChange()
     let updated = sessions[index]
     persist()
     return updated
@@ -278,7 +304,9 @@ final class AppModel: ObservableObject {
     guard let index = sessions.firstIndex(where: { $0.id == id }) else {
       throw RemoteAgentError.sessionNotFound
     }
+    guard sessions[index].title != trimmed else { return sessions[index] }
     sessions[index].title = trimmed
+    sessions[index].recordContentChange()
     let updated = sessions[index]
     persist()
     return updated
@@ -295,6 +323,7 @@ final class AppModel: ObservableObject {
     }
     let prompt = QueuedPrompt(text: trimmed)
     sessions[index].queuedPrompts.append(prompt)
+    sessions[index].recordContentChange()
     persist()
     Task { @MainActor [weak self] in
       await self?.drainPromptQueueIfPossible(sessionID: sessionID)
@@ -323,6 +352,7 @@ final class AppModel: ObservableObject {
     let existing = sessions[sessionIndex].queuedPrompts[promptIndex]
     let updated = QueuedPrompt(id: existing.id, text: trimmed, createdAt: existing.createdAt)
     sessions[sessionIndex].queuedPrompts[promptIndex] = updated
+    sessions[sessionIndex].recordContentChange()
     persist()
     return updated
   }
@@ -340,6 +370,7 @@ final class AppModel: ObservableObject {
       throw RemoteAgentError.queuedPromptNotFound
     }
     let removed = sessions[sessionIndex].queuedPrompts.remove(at: promptIndex)
+    sessions[sessionIndex].recordContentChange()
     persist()
     return removed
   }
@@ -369,6 +400,7 @@ final class AppModel: ObservableObject {
     sessions[index].currentReasoning = nil
     sessions[index].isUnread = false
     sessions[index].updatedAt = Date()
+    sessions[index].recordContentChange()
     let projectPath = sessions[index].projectPath
     let codexSessionID = sessions[index].codexSessionID
     persist()
@@ -395,6 +427,7 @@ final class AppModel: ObservableObject {
       sessions[updatedIndex].currentReasoning = nil
       sessions[updatedIndex].isUnread = selectedSessionID != id || !NSApp.isActive
       sessions[updatedIndex].updatedAt = Date()
+      sessions[updatedIndex].recordContentChange()
       persist()
     } catch {
       guard let updatedIndex = sessions.firstIndex(where: { $0.id == id }) else { return }
@@ -409,6 +442,7 @@ final class AppModel: ObservableObject {
       sessions[updatedIndex].currentReasoning = nil
       sessions[updatedIndex].isUnread = selectedSessionID != id || !NSApp.isActive
       sessions[updatedIndex].updatedAt = Date()
+      sessions[updatedIndex].recordContentChange()
       persist()
       presentedError = error.localizedDescription
     }
@@ -431,6 +465,7 @@ final class AppModel: ObservableObject {
     else { return }
 
     sessions[index].queuedPrompts.removeFirst()
+    sessions[index].recordContentChange()
     persist()
     await sendPrompt(prompt.text, to: sessionID)
   }
@@ -459,7 +494,9 @@ final class AppModel: ObservableObject {
       let index = sessions.firstIndex(where: { $0.id == session.id })
     else { return }
     var updatedSessions = sessions
+    guard updatedSessions[index].selectedMakeTarget != target else { return }
     updatedSessions[index].selectedMakeTarget = target
+    updatedSessions[index].recordContentChange()
     sessions = updatedSessions
     persist()
   }
@@ -619,6 +656,7 @@ final class AppModel: ObservableObject {
     )
     sessions[index].updatedAt = startedAt
     sessions[index].isUnread = false
+    sessions[index].recordContentChange()
     persist()
     do {
       try await projectCommandResultStore.save(Array(projectCommandResults.values))
@@ -654,6 +692,7 @@ final class AppModel: ObservableObject {
     sessions[index].messages[messageIndex].state = outcome.succeeded ? .complete : .failed
     sessions[index].updatedAt = outcome.completedAt
     sessions[index].isUnread = selectedSessionID != sessionID || NSApp?.isActive != true
+    sessions[index].recordContentChange()
     persist()
     do {
       try await projectCommandResultStore.save(Array(projectCommandResults.values))
@@ -679,51 +718,123 @@ final class AppModel: ObservableObject {
   }
 
   func restartAPI() {
-    apiRestartTask?.cancel()
-    apiRestartTask = nil
+    apiRestartDebounceTask?.cancel()
+    apiRestartDebounceTask = nil
     apiGeneration += 1
     let generation = apiGeneration
-    apiServer?.stop()
+    let previousLifecycleTask = apiLifecycleTask
+    let serverToStop = apiServer
     apiServer = nil
-    guard settings.apiEnabled else {
-      apiStatus = "API disabled"
-      return
-    }
+    apiServerAttemptID = nil
+    clearAPIListenerDiagnostics()
+    let shouldEnable = settings.apiEnabled
+    let configuredPort = settings.apiPort
 
-    guard (1...65_535).contains(settings.apiPort) else {
+    if !shouldEnable {
+      apiStatus = serverToStop == nil ? "API disabled" : "Stopping API…"
+    } else if !(1...65_535).contains(configuredPort) {
       apiStatus = "API failed: port must be between 1 and 65535"
-      return
+    } else {
+      apiStatus = serverToStop == nil ? "Starting API…" : "Restarting API…"
     }
 
-    let server = RemoteAPIServer { [weak self] request in
-      guard let self else { return .json(APIErrorBody(error: "App unavailable"), status: 500) }
-      let startedAt = Date()
-      let response = await self.handleAPI(request)
-      await self.recordAPIActivity(request: request, response: response, startedAt: startedAt)
-      return response
-    } stateChanged: { [weak self] state in
-      Task { @MainActor [weak self] in
-        guard let self, self.apiGeneration == generation else { return }
-        self.apiStatus = state
+    apiLifecycleTask = Task { [weak self, previousLifecycleTask, serverToStop] in
+      await previousLifecycleTask?.value
+      if let serverToStop {
+        await serverToStop.stopAndWait()
       }
+      guard let self, self.apiGeneration == generation else { return }
+      guard shouldEnable else {
+        self.apiStatus = "API disabled"
+        return
+      }
+      guard (1...65_535).contains(configuredPort) else { return }
+      await self.startAPIWithRetry(port: UInt16(configuredPort), generation: generation)
     }
-    apiServer = server
-    apiStatus = "Starting API…"
-    do {
-      try server.start(port: UInt16(settings.apiPort))
-    } catch {
-      apiServer = nil
-      apiStatus = "API failed: \(error.localizedDescription)"
+  }
+
+  private func startAPIWithRetry(port: UInt16, generation: Int) async {
+    let retryDelays: [Duration] = [
+      .milliseconds(50), .milliseconds(100), .milliseconds(200), .milliseconds(400),
+      .milliseconds(800),
+    ]
+    let activityBatcher = apiActivityBatcher
+    for attempt in 0...retryDelays.count {
+      guard apiGeneration == generation else { return }
+      let attemptID = UUID()
+      let server = RemoteAPIServer(advertisesBonjour: advertisesAPIWithBonjour) {
+        [weak self, activityBatcher] request in
+        guard let self else {
+          return .json(APIErrorBody(error: "App unavailable"), status: 500)
+        }
+        let startedAt = Date()
+        let response = await self.handleAPI(request)
+        let completedAt = Date()
+        let entry = Self.makeAPIActivityEntry(
+          request: request,
+          response: response,
+          startedAt: startedAt,
+          completedAt: completedAt
+        )
+        await activityBatcher.record(entry)
+        return response
+      } stateChanged: { [weak self] state in
+        Task { @MainActor [weak self] in
+          guard let self, self.apiGeneration == generation,
+            self.apiServerAttemptID == attemptID
+          else { return }
+          self.apiStatus = state
+          self.apiListeningPort = self.apiServer?.boundPort
+          self.refreshAPIListenerAddresses()
+        }
+      }
+      apiServer = server
+      apiServerAttemptID = attemptID
+      do {
+        try await server.startAndWait(port: port)
+        guard apiGeneration == generation, apiServerAttemptID == attemptID else {
+          await server.stopAndWait()
+          return
+        }
+        return
+      } catch {
+        if apiServerAttemptID == attemptID {
+          apiServer = nil
+          apiServerAttemptID = nil
+          clearAPIListenerDiagnostics()
+        }
+        await server.stopAndWait()
+        guard apiGeneration == generation else { return }
+        if Self.isAddressInUse(error), attempt < retryDelays.count {
+          apiStatus = "Port \(port) is still releasing; retrying…"
+          try? await Task.sleep(for: retryDelays[attempt])
+          continue
+        }
+        apiStatus = "API failed: \(error.localizedDescription)"
+        return
+      }
     }
   }
 
   func scheduleAPIRestart() {
-    apiRestartTask?.cancel()
-    apiRestartTask = Task { [weak self] in
+    apiRestartDebounceTask?.cancel()
+    apiRestartDebounceTask = Task { [weak self] in
       try? await Task.sleep(for: .milliseconds(350))
       guard !Task.isCancelled else { return }
-      self?.restartAPI()
+      guard let self else { return }
+      self.apiRestartDebounceTask = nil
+      self.restartAPI()
     }
+  }
+
+  private static func isAddressInUse(_ error: Error) -> Bool {
+    if let networkError = error as? NWError,
+      case .posix(let code) = networkError
+    {
+      return code == .EADDRINUSE
+    }
+    let error = error as NSError
+    return error.domain == NSPOSIXErrorDomain && error.code == Int(EADDRINUSE)
   }
 
   func configureCrashRelaunch() {
@@ -733,8 +844,62 @@ final class AppModel: ObservableObject {
   }
 
   func clearAPIActivityLog() {
+    let activityBatcher = apiActivityBatcher
+    Task { await activityBatcher.discardPending() }
     apiActivityLog = []
     persistAPIActivity()
+  }
+
+  func refreshAPIListenerAddresses() {
+    guard apiListeningPort != nil else {
+      apiListenerAddresses = []
+      apiHealthTestStates = [:]
+      apiHealthTestIDs = [:]
+      return
+    }
+    let addresses = APIListenerAddressResolver.activeAddresses()
+    let addressIDs = Set(addresses.map(\.id))
+    apiListenerAddresses = addresses
+    apiHealthTestStates = apiHealthTestStates.filter { addressIDs.contains($0.key) }
+    apiHealthTestIDs = apiHealthTestIDs.filter { addressIDs.contains($0.key) }
+  }
+
+  func testAPIListenerAddress(_ address: APIListenerAddress) async {
+    guard let port = apiListeningPort,
+      apiListenerAddresses.contains(address)
+    else { return }
+    let generation = apiGeneration
+    let bearerToken = settings.apiToken
+    let testID = UUID()
+    apiHealthTestIDs[address.id] = testID
+    apiHealthTestStates[address.id] = .testing
+    do {
+      let success = try await APIHealthProbe.test(
+        address: address,
+        port: port,
+        bearerToken: bearerToken
+      )
+      guard apiGeneration == generation,
+        apiListeningPort == port,
+        settings.apiToken == bearerToken,
+        apiHealthTestIDs[address.id] == testID
+      else { return }
+      apiHealthTestStates[address.id] = .succeeded(success)
+    } catch {
+      guard apiGeneration == generation,
+        apiListeningPort == port,
+        settings.apiToken == bearerToken,
+        apiHealthTestIDs[address.id] == testID
+      else { return }
+      apiHealthTestStates[address.id] = .failed(error.localizedDescription)
+    }
+  }
+
+  private func clearAPIListenerDiagnostics() {
+    apiListeningPort = nil
+    apiListenerAddresses = []
+    apiHealthTestStates = [:]
+    apiHealthTestIDs = [:]
   }
 
   func handleAPI(_ request: HTTPRequest) async -> HTTPResponse {
@@ -752,6 +917,24 @@ final class AppModel: ObservableObject {
     }
     if request.method == "GET", request.path == RemoteAgentEndpoint.projects {
       return .json(ProjectSorter.byMostRecentSession(projects, sessions: sessions))
+    }
+    if request.method == "GET", request.path == RemoteAgentEndpoint.sessionStatus {
+      guard let rawIDs = request.query["ids"] else {
+        return .json(APIErrorBody(error: "An ids query parameter is required"), status: 400)
+      }
+      let rawComponents = rawIDs.split(separator: ",", omittingEmptySubsequences: false)
+      guard !rawComponents.isEmpty, rawComponents.count <= 50 else {
+        return .json(APIErrorBody(error: "Between 1 and 50 session IDs are required"), status: 400)
+      }
+      let requestedIDs = rawComponents.compactMap { UUID(uuidString: String($0)) }
+      guard requestedIDs.count == rawComponents.count else {
+        return .json(APIErrorBody(error: "Every session ID must be a UUID"), status: 400)
+      }
+      let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+      let statusSnapshots = requestedIDs.compactMap { id in
+        sessionsByID[id].map { sessionStatusSnapshot(for: $0) }
+      }
+      return .json(statusSnapshots)
     }
     if request.method == "GET", request.path == RemoteAgentEndpoint.sessions {
       let result =
@@ -987,11 +1170,29 @@ final class AppModel: ObservableObject {
     return .json(APIErrorBody(error: "Route not found"), status: 404)
   }
 
-  private func recordAPIActivity(
+  private func sessionStatusSnapshot(for session: AgentSession) -> SessionStatusSnapshot {
+    SessionStatusSnapshot(
+      id: session.id,
+      contentRevision: session.contentRevision,
+      messageCount: session.messages.count,
+      updatedAt: session.updatedAt,
+      isRunning: session.isRunning,
+      currentReasoning: session.currentReasoning,
+      isUnread: session.isUnread,
+      hasPendingProjectCommand: runningProjectCommandSessionIDs.contains(session.id)
+        || session.messages.contains {
+          $0.projectCommandResultID != nil && $0.state == .pending
+        },
+      queuedPromptCount: session.queuedPrompts.count
+    )
+  }
+
+  private nonisolated static func makeAPIActivityEntry(
     request: HTTPRequest,
     response: HTTPResponse,
-    startedAt: Date
-  ) {
+    startedAt: Date,
+    completedAt: Date
+  ) -> APIActivityEntry {
     let rawClientName =
       request.headers["x-remote-agent-client"]
       ?? request.headers["user-agent"]
@@ -1007,18 +1208,21 @@ final class AppModel: ObservableObject {
       .map { "\($0.key)=\($0.value)" }
       .joined(separator: "&")
     let requestPath = query.isEmpty ? request.path : "\(request.path)?\(query)"
-    let duration = max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))
-    apiActivityLog.append(
-      APIActivityEntry(
-        remoteHost: request.remoteHost,
-        clientName: clientName,
-        method: request.method,
-        path: requestPath,
-        statusCode: response.status,
-        durationMilliseconds: duration,
-        isRemoteClient: APIClientClassifier.isRemote(host: request.remoteHost)
-      )
+    return APIActivityEntry(
+      timestamp: completedAt,
+      remoteHost: request.remoteHost,
+      clientName: clientName,
+      method: request.method,
+      path: requestPath,
+      statusCode: response.status,
+      responsePayloadByteCount: response.body.count,
+      durationMilliseconds: max(0, Int(completedAt.timeIntervalSince(startedAt) * 1_000)),
+      isRemoteClient: APIClientClassifier.isRemote(host: request.remoteHost)
     )
+  }
+
+  private func appendAPIActivity(_ entries: [APIActivityEntry]) {
+    apiActivityLog.append(contentsOf: entries)
     if apiActivityLog.count > 500 {
       apiActivityLog.removeFirst(apiActivityLog.count - 500)
     }
@@ -1035,10 +1239,18 @@ final class AppModel: ObservableObject {
   }
 
   private func persistAPIActivity() {
+    apiActivityPersistenceTask?.cancel()
     let snapshot = apiActivityLog
-    Task {
-      do { try await activityStore.save(snapshot) } catch {
-        presentedError = "Could not save API activity: \(error.localizedDescription)"
+    let store = activityStore
+    apiActivityPersistenceTask = Task { [weak self] in
+      do {
+        try await Task.sleep(for: .milliseconds(200))
+        try Task.checkCancellation()
+        try await store.save(snapshot)
+      } catch is CancellationError {
+        return
+      } catch {
+        self?.presentedError = "Could not save API activity: \(error.localizedDescription)"
       }
     }
   }

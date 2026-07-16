@@ -143,7 +143,8 @@ struct DocumentViewerView: View {
       let content = try await Task.detached {
         let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
         guard data.count <= ProjectDocumentService.maximumByteCount else {
-          throw RemoteAgentError.invalidRequest("Document is larger than 2 MB")
+          throw RemoteAgentError.invalidRequest(
+            "Document is larger than \(ProjectDocumentService.maximumSizeDescription)")
         }
         guard let text = String(data: data, encoding: .utf8) else {
           throw RemoteAgentError.invalidRequest("Document is not UTF-8 text")

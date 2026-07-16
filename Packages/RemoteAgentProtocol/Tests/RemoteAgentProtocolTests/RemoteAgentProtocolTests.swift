@@ -4,6 +4,10 @@ import XCTest
 @testable import RemoteAgentProtocol
 
 final class RemoteAgentProtocolTests: XCTestCase {
+  func testSessionStatusEndpointIsSeparateFromSessionUUIDRoutes() {
+    XCTAssertEqual(RemoteAgentEndpoint.sessionStatus, "/v1/session-status")
+  }
+
   func testSessionEndpointsUseCanonicalUUIDForm() {
     let id = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
 
@@ -66,6 +70,61 @@ final class RemoteAgentProtocolTests: XCTestCase {
     XCTAssertEqual(
       try JSONSerialization.jsonObject(with: update) as? [String: String],
       ["text": "Edited"]
+    )
+  }
+
+  func testSessionStatusTreatsEveryWorkSourceAsActive() {
+    let idle = SessionStatusSnapshot(
+      id: UUID(),
+      contentRevision: 1,
+      messageCount: 2,
+      updatedAt: Date(),
+      isRunning: false,
+      currentReasoning: nil,
+      isUnread: false,
+      hasPendingProjectCommand: false,
+      queuedPromptCount: 0
+    )
+
+    XCTAssertFalse(idle.hasActiveWork)
+    XCTAssertTrue(
+      SessionStatusSnapshot(
+        id: idle.id,
+        contentRevision: idle.contentRevision,
+        messageCount: idle.messageCount,
+        updatedAt: idle.updatedAt,
+        isRunning: true,
+        currentReasoning: nil,
+        isUnread: false,
+        hasPendingProjectCommand: false,
+        queuedPromptCount: 0
+      ).hasActiveWork
+    )
+    XCTAssertTrue(
+      SessionStatusSnapshot(
+        id: idle.id,
+        contentRevision: idle.contentRevision,
+        messageCount: idle.messageCount,
+        updatedAt: idle.updatedAt,
+        isRunning: false,
+        currentReasoning: nil,
+        isUnread: false,
+        hasPendingProjectCommand: true,
+        queuedPromptCount: 0
+      ).hasActiveWork
+    )
+    XCTAssertTrue(
+      SessionStatusSnapshot(
+        id: idle.id,
+        contentRevision: idle.contentRevision,
+        messageCount: idle.messageCount,
+        updatedAt: idle.updatedAt,
+        isRunning: false,
+        currentReasoning: nil,
+        isUnread: false,
+        hasPendingProjectCommand: false,
+        queuedPromptCount: 1
+      ).hasActiveWork
     )
   }
 }

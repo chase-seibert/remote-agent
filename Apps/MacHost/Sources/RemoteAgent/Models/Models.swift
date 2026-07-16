@@ -95,6 +95,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   var isPinned: Bool
   var selectedMakeTarget: String?
   var queuedPrompts: [QueuedPrompt]
+  var contentRevision: UInt64
 
   init(project: AgentProject) {
     id = UUID()
@@ -111,6 +112,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     isPinned = false
     selectedMakeTarget = nil
     queuedPrompts = []
+    contentRevision = 0
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -128,6 +130,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case isPinned
     case selectedMakeTarget
     case queuedPrompts
+    case contentRevision
   }
 
   init(from decoder: Decoder) throws {
@@ -146,6 +149,11 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
     selectedMakeTarget = try container.decodeIfPresent(String.self, forKey: .selectedMakeTarget)
     queuedPrompts = try container.decodeIfPresent([QueuedPrompt].self, forKey: .queuedPrompts) ?? []
+    contentRevision = try container.decodeIfPresent(UInt64.self, forKey: .contentRevision) ?? 0
+  }
+
+  mutating func recordContentChange() {
+    contentRevision &+= 1
   }
 }
 
@@ -217,6 +225,7 @@ struct ProjectDocument: Identifiable, Codable, Hashable, Sendable {
   let relativePath: String
   let kind: ProjectDocumentKind
   let byteCount: Int
+  let modifiedAt: Date?
 }
 
 struct ProjectDocumentContent: Codable, Hashable, Sendable {
@@ -256,6 +265,7 @@ struct APIActivityEntry: Identifiable, Codable, Hashable, Sendable {
   let method: String
   let path: String
   let statusCode: Int
+  let responsePayloadByteCount: Int?
   let durationMilliseconds: Int
   let isRemoteClient: Bool
 
@@ -267,6 +277,7 @@ struct APIActivityEntry: Identifiable, Codable, Hashable, Sendable {
     method: String,
     path: String,
     statusCode: Int,
+    responsePayloadByteCount: Int? = nil,
     durationMilliseconds: Int,
     isRemoteClient: Bool
   ) {
@@ -277,6 +288,7 @@ struct APIActivityEntry: Identifiable, Codable, Hashable, Sendable {
     self.method = method
     self.path = path
     self.statusCode = statusCode
+    self.responsePayloadByteCount = responsePayloadByteCount
     self.durationMilliseconds = durationMilliseconds
     self.isRemoteClient = isRemoteClient
   }

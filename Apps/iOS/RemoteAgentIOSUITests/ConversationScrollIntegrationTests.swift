@@ -91,6 +91,20 @@ final class ConversationScrollIntegrationTests: XCTestCase {
     XCTAssertTrue(app.buttons["Save"].exists)
   }
 
+  func testFileBrowserCanSortByName() {
+    let app = launch(fixture: "document-browser")
+    let readme = app.staticTexts["README.md"]
+    let status = app.staticTexts["status.html"]
+    XCTAssertTrue(readme.waitForExistence(timeout: 5))
+    XCTAssertTrue(status.exists)
+    XCTAssertLessThan(status.frame.minY, readme.frame.minY)
+
+    app.buttons["Sort Files"].tap()
+    app.buttons["Name"].tap()
+
+    XCTAssertLessThan(readme.frame.minY, status.frame.minY)
+  }
+
   private func launch(fixture: String) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment["REMOTE_AGENT_FIXTURE"] = fixture

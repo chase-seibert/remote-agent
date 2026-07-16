@@ -6,6 +6,8 @@ The Mac is the host and the only machine that launches Codex. The iOS app is a t
 
 The Mac advertises a Bonjour service named `Remote Agent` with type `_remoteagent._tcp`. Prefer `NWBrowser` discovery and use the discovered endpoint directly. Manual hostname/IP and port entry remains a fallback. Do not advertise or store the bearer token in Bonjour metadata.
 
+The host serves one request per HTTP/1.1 connection and replies with `Connection: close`. Clients should allow their networking stack to open a new socket for the next request. The iOS client explicitly advertises `Accept-Encoding: deflate`; the host compresses beneficial response bodies of at least 32 KB and URLSession transparently decodes them, preventing long session histories from filling the phone's receive window during connection. After queueing a complete response, the host keeps the socket alive until the client closes its side or the bounded response deadline expires; this is required because Network.framework's send completion does not mean a remote client has received every queued byte. Restarting the Mac listener closes every accepted socket before rebinding so a client can reconnect without retaining a stale host connection. The host bounds connections and in-flight handlers globally and per source address, reserving capacity for health and session-status reads. Over-capacity requests may receive `503 Service Unavailable` with `Retry-After`; safe reads may retry, but clients must not automatically replay mutations.
+
 Example base URL:
 
 ```text
@@ -55,7 +57,7 @@ Returns an array of `{ "id", "name", "path" }`. Treat `id` as opaque. The path i
 {"projectID":"<opaque-project-id>"}
 ```
 
-The response is `201 Created` with the full session. A session has a Remote Agent UUID `id`, an optional `codexSessionID`, project fields, title and timestamps, a `messages` array, `isRunning`, optional `currentReasoning`, `isUnread`, `isPinned`, and optional `selectedMakeTarget`. Dates use ISO 8601. Enum values are lowercase strings. `currentReasoning` contains only the latest concise reasoning summary while a turn is running; the host replaces it in place, clears it at completion, and never persists it. A project-command message includes `projectCommandResultID`; ordinary messages omit it.
+The response is `201 Created` with the full session. A session has a Remote Agent UUID `id`, an optional `codexSessionID`, project fields, title and timestamps, a `messages` array, `isRunning`, optional `currentReasoning`, `isUnread`, `isPinned`, optional `selectedMakeTarget`, and a monotonic `contentRevision`. Dates use ISO 8601. Enum values are lowercase strings. `contentRevision` advances whenever API-visible persisted session content changes. `currentReasoning` contains only the latest concise reasoning summary while a turn is running; the host replaces it in place, clears it at completion, never persists it, and does not advance the content revision for reasoning-only updates. A project-command message includes `projectCommandResultID`; ordinary messages omit it.
 
 `GET /v1/sessions/<session-uuid>` fetches one current session.
 
@@ -105,7 +107,13 @@ HTTP/1.1 202 Accepted
 {"sessionID":"<session-uuid>","status":"accepted"}
 ```
 
-Poll `GET /v1/sessions/<session-uuid>` about once per second while `isRunning` is true or a message with `projectCommandResultID` remains `pending`. Replace the visible working summary with a non-empty `currentReasoning` value from each agent snapshot. Stop polling when neither kind of active work remains, remove the working summary, then render the updated assistant or system message. Back off or stop polling when the app is backgrounded. Only one agent turn or project command may run per session; a concurrent submission receives `409 Conflict`.
+Poll `GET /v1/session-status?ids=<session-uuid>,<session-uuid>` about once per second while any known session has active work. The endpoint accepts 1–50 watched IDs and returns compact records such as:
+
+```json
+[{"id":"<session-uuid>","contentRevision":12,"messageCount":8,"updatedAt":"2026-07-16T20:00:00Z","isRunning":true,"currentReasoning":"Checking the networking tests.","isUnread":false,"hasPendingProjectCommand":false,"queuedPromptCount":1}]
+```
+
+Update transient reasoning and unread state directly. When `contentRevision` changes, fetch only that authoritative session with `GET /v1/sessions/<session-uuid>`; message count, activity time, pending-command state, and queue count are also supplied as defensive invalidation checks. Do not apply message deltas. This full-session recovery path makes missed polls, reconnects, and queued turns that start without an idle gap harmless. If the status route returns `404`, an older client-compatible host may be polled through `GET /v1/sessions` for the rest of that connection. Stop polling when no work source remains, remove the working summary, then render the updated assistant or system message. Bound concurrent requests, apply exponential backoff with jitter to safe reads, honor `Retry-After`, and stop foreground polling when the app is backgrounded. Only one agent turn or project command may run per session; a concurrent submission receives `409 Conflict`.
 
 ### Project commands
 
@@ -138,9 +146,9 @@ The response includes `id`, `sessionID`, `projectPath`, `kind`, `title`, `comman
 
 ### Project documents
 
-`GET /v1/documents?project_id=<opaque-project-id>` returns Markdown, HTML, and source-code metadata as `{ "id", "name", "relativePath", "kind", "byteCount" }`. Supported kinds are `markdown` for `.md` and `.markdown`, `html` for `.html` and `.htm`, and `code` for common programming, shell, data, configuration, and build-file extensions plus extensionless files such as `Dockerfile` and `Makefile`.
+`GET /v1/documents?project_id=<opaque-project-id>` returns Markdown, HTML, and source-code metadata as `{ "id", "name", "relativePath", "kind", "byteCount", "modifiedAt" }`, ordered by modification time with the newest files first. `modifiedAt` is an ISO 8601 timestamp. Supported kinds are `markdown` for `.md` and `.markdown`, `html` for `.html` and `.htm`, and `code` for common programming, shell, data, configuration, and build-file extensions plus extensionless files such as `Dockerfile` and `Makefile`.
 
-`GET /v1/documents/<document-id>?project_id=<opaque-project-id>` returns `{ "document": <metadata>, "content": "<UTF-8 text>" }`. Document IDs are opaque. The host only returns files discovered inside the selected project, skips hidden and common generated directories, and rejects content larger than 2 MB.
+`GET /v1/documents/<document-id>?project_id=<opaque-project-id>` returns `{ "document": <metadata>, "content": "<UTF-8 text>" }`. Document IDs are opaque. The host only returns files discovered inside the selected project, skips hidden and common generated directories, and rejects content larger than 10 MB.
 
 ## Errors
 
@@ -148,8 +156,12 @@ Errors use an HTTP status and `{ "error": "human-readable detail" }`:
 
 - `400`: malformed JSON, missing text, or unknown project.
 - `401`: absent/incorrect bearer token.
+- `408`: request headers or body did not arrive within the host deadline.
+- `413` or `431`: request body or headers exceeded the configured parser limit.
 - `404`: route or session not found.
 - `409`: the session is already processing an agent turn or project command and cannot accept the requested operation.
+- `503`: connection or handler capacity is busy; safe reads may retry according to `Retry-After`.
+- `504`: the client response deadline elapsed, but accepted host work continues and can be observed after reconnecting.
 - `500`: host-side failure.
 
 Codex execution failures are appended to the session as a `system` message whose state is `failed`; therefore a successfully accepted request can still result in a later agent failure.
