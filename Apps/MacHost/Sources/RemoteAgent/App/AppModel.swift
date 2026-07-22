@@ -8,7 +8,6 @@ private struct APIHealth: Codable {
   let status: String
   let version: String
 }
-private struct CreateSessionBody: Codable { let projectID: String }
 private struct SendMessageBody: Codable { let text: String }
 private struct AcceptedBody: Codable {
   let sessionID: UUID
@@ -22,6 +21,7 @@ final class AppModel: ObservableObject {
   @Published var selectedProjectID: String?
   @Published var selectedSessionID: UUID?
   @Published var isShowingNewSessionPicker = false
+  @Published var pendingNewSessionProjectID: String?
   @Published private(set) var apiStatus = "API stopped"
   @Published private(set) var apiListeningPort: UInt16?
   @Published private(set) var apiListenerAddresses: [APIListenerAddress] = []
@@ -30,6 +30,9 @@ final class AppModel: ObservableObject {
   @Published private(set) var apiActivityLog: [APIActivityEntry] = []
   @Published private(set) var projectCommandResults: [UUID: ProjectCommandResult] = [:]
   @Published private(set) var runningProjectCommandSessionIDs: Set<UUID> = []
+  @Published private(set) var codexModels: [CodexModelOption] = []
+  @Published private(set) var isRefreshingCodexModels = false
+  @Published private(set) var codexModelCatalogError: String?
   @Published var presentedError: String?
 
   let settings: AppSettings
@@ -39,6 +42,7 @@ final class AppModel: ObservableObject {
   private let projectCommands: ProjectCommandService
   private let scanner = ProjectScanner()
   private let codex: any CodexSending
+  private let codexModelCatalog: any CodexModelListing
   private let documents = ProjectDocumentService()
   private let advertisesAPIWithBonjour: Bool
   private var apiServer: RemoteAPIServer?
@@ -60,6 +64,7 @@ final class AppModel: ObservableObject {
     projectCommandResultStore: ProjectCommandResultStore = ProjectCommandResultStore(),
     projectCommands: ProjectCommandService = ProjectCommandService(),
     codex: any CodexSending = CodexCLIClient(),
+    codexModelCatalog: any CodexModelListing = CodexModelCatalogClient(),
     advertisesAPIWithBonjour: Bool = true
   ) {
     self.settings = settings
@@ -68,6 +73,7 @@ final class AppModel: ObservableObject {
     self.projectCommandResultStore = projectCommandResultStore
     self.projectCommands = projectCommands
     self.codex = codex
+    self.codexModelCatalog = codexModelCatalog
     self.advertisesAPIWithBonjour = advertisesAPIWithBonjour
   }
 
@@ -81,6 +87,10 @@ final class AppModel: ObservableObject {
 
   var recentSessions: [AgentSession] {
     SessionSorter.mostRecent(sessions)
+  }
+
+  var mostRecentlyUsedCodexModel: String? {
+    recentSessions.compactMap(\.codexModel).first ?? normalizedCodexModel(settings.codexModel)
   }
 
   var lastRemoteClientActivityAt: Date? {
@@ -176,6 +186,7 @@ final class AppModel: ObservableObject {
       presentedError = "Could not load API activity: \(error.localizedDescription)"
     }
     await refreshProjects()
+    await refreshCodexModels()
     restartAPI()
     scheduleQueuedPromptsForIdleSessions()
   }
@@ -205,12 +216,24 @@ final class AppModel: ObservableObject {
 
   @discardableResult
   func createSession(projectID: String? = nil, select: Bool = true) -> AgentSession? {
+    createSession(projectID: projectID, codexModel: nil, select: select)
+  }
+
+  @discardableResult
+  func createSession(
+    projectID: String? = nil,
+    codexModel: String?,
+    select: Bool = true
+  ) -> AgentSession? {
     let targetID = projectID ?? selectedProjectID
     guard let project = projects.first(where: { $0.id == targetID }) else {
       presentedError = RemoteAgentError.projectNotFound.localizedDescription
       return nil
     }
-    let session = AgentSession(project: project)
+    let selectedModel =
+      normalizedCodexModel(codexModel) ?? normalizedCodexModel(settings.codexModel)
+    let session = AgentSession(project: project, codexModel: selectedModel)
+    if let selectedModel { settings.codexModel = selectedModel }
     sessions.append(session)
     if select {
       selectedProjectID = project.id
@@ -220,13 +243,32 @@ final class AppModel: ObservableObject {
     return session
   }
 
-  func requestNewSession() {
+  func requestNewSession(projectID: String? = nil) {
     guard !projects.isEmpty else {
       presentedError =
         "No projects are available. Choose a projects folder in Settings, then refresh."
       return
     }
+    pendingNewSessionProjectID = projectID
     isShowingNewSessionPicker = true
+  }
+
+  func applyCodexModel(_ rawModel: String) {
+    settings.codexModel = normalizedCodexModel(rawModel) ?? ""
+  }
+
+  func refreshCodexModels() async {
+    guard !isRefreshingCodexModels else { return }
+    isRefreshingCodexModels = true
+    defer { isRefreshingCodexModels = false }
+    do {
+      codexModels = try await codexModelCatalog.listModels(
+        configuredExecutable: settings.codexPath
+      )
+      codexModelCatalogError = nil
+    } catch {
+      codexModelCatalogError = error.localizedDescription
+    }
   }
 
   func selectSession(_ id: UUID?) {
@@ -307,6 +349,22 @@ final class AppModel: ObservableObject {
     guard sessions[index].title != trimmed else { return sessions[index] }
     sessions[index].title = trimmed
     sessions[index].recordContentChange()
+    let updated = sessions[index]
+    persist()
+    return updated
+  }
+
+  @discardableResult
+  func setSessionCodexModel(_ id: UUID, codexModel: String?) throws -> AgentSession {
+    guard let index = sessions.firstIndex(where: { $0.id == id }) else {
+      throw RemoteAgentError.sessionNotFound
+    }
+    guard !sessions[index].isRunning else { throw RemoteAgentError.sessionBusy }
+    let normalized = normalizedCodexModel(codexModel)
+    guard sessions[index].codexModel != normalized else { return sessions[index] }
+    sessions[index].codexModel = normalized
+    sessions[index].recordContentChange()
+    if let normalized { settings.codexModel = normalized }
     let updated = sessions[index]
     persist()
     return updated
@@ -403,6 +461,7 @@ final class AppModel: ObservableObject {
     sessions[index].recordContentChange()
     let projectPath = sessions[index].projectPath
     let codexSessionID = sessions[index].codexSessionID
+    let codexModel = sessions[index].codexModel
     persist()
 
     do {
@@ -411,6 +470,7 @@ final class AppModel: ObservableObject {
         projectPath: projectPath,
         existingSessionID: codexSessionID,
         configuredExecutable: settings.codexPath,
+        model: codexModel,
         onEvent: { [weak self] event in
           guard let reasoning = event.reasoningText else { return }
           Task { @MainActor [weak self] in
@@ -447,6 +507,12 @@ final class AppModel: ObservableObject {
       presentedError = error.localizedDescription
     }
     await drainPromptQueueIfPossible(sessionID: id)
+  }
+
+  private func normalizedCodexModel(_ model: String?) -> String? {
+    guard let model else { return nil }
+    let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
   }
 
   private func scheduleQueuedPromptsForIdleSessions() {
@@ -918,6 +984,15 @@ final class AppModel: ObservableObject {
     if request.method == "GET", request.path == RemoteAgentEndpoint.projects {
       return .json(ProjectSorter.byMostRecentSession(projects, sessions: sessions))
     }
+    if request.method == "GET", request.path == RemoteAgentEndpoint.models {
+      if codexModels.isEmpty { await refreshCodexModels() }
+      guard !codexModels.isEmpty else {
+        return .json(
+          APIErrorBody(error: codexModelCatalogError ?? "No Codex models are available"),
+          status: 503)
+      }
+      return .json(codexModels)
+    }
     if request.method == "GET", request.path == RemoteAgentEndpoint.sessionStatus {
       guard let rawIDs = request.query["ids"] else {
         return .json(APIErrorBody(error: "An ids query parameter is required"), status: 400)
@@ -944,10 +1019,14 @@ final class AppModel: ObservableObject {
       return .json(SessionSorter.mostRecent(result, limit: result.count))
     }
     if request.method == "POST", request.path == RemoteAgentEndpoint.sessions {
-      guard let body = try? JSONDecoder().decode(CreateSessionBody.self, from: request.body),
+      guard let body = try? JSONDecoder().decode(CreateSessionRequest.self, from: request.body),
         projects.contains(where: { $0.id == body.projectID })
       else { return .json(APIErrorBody(error: "Invalid projectID"), status: 400) }
-      guard let session = createSession(projectID: body.projectID, select: false) else {
+      guard
+        let session = createSession(
+          projectID: body.projectID, codexModel: body.codexModel, select: false
+        )
+      else {
         return .json(APIErrorBody(error: "Could not create session"), status: 500)
       }
       return .json(session, status: 201)
@@ -1097,9 +1176,10 @@ final class AppModel: ObservableObject {
       if request.method == "PATCH", parts.count == 3 {
         guard let body = try? JSONDecoder().decode(SessionUpdateRequest.self, from: request.body),
           body.title != nil || body.isPinned != nil || body.selectedMakeTarget != nil
+            || body.codexModel != nil
         else {
           return .json(
-            APIErrorBody(error: "A title, isPinned, or selectedMakeTarget field is required"),
+            APIErrorBody(error: "A session update field is required"),
             status: 400
           )
         }
@@ -1120,6 +1200,9 @@ final class AppModel: ObservableObject {
               return .json(APIErrorBody(error: "Session not found"), status: 404)
             }
             updated = selected
+          }
+          if body.codexModel != nil {
+            updated = try setSessionCodexModel(sessionID, codexModel: body.codexModel)
           }
           return .json(updated)
         } catch {

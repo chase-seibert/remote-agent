@@ -2,13 +2,18 @@
 
 ## 2026-07-16
 
+- New conversations on macOS and iOS now present a model picker after the project is chosen. The most recently used model is preselected, and changing the host default no longer changes existing sessions.
+
 ### Mac Host
 
+- Added a persisted host-wide Codex model setting with a refreshable dropdown sourced from `codex debug models` and a custom-ID fallback, applied it to new and resumed turns, and displayed the configured model in every session row.
 - Added logical response payload sizes to Mobile Debug request rows and copied logs, while preserving compatibility with older persisted entries.
 - Added a compact watched-session status endpoint backed by persisted monotonic content revisions, keeping transient reasoning updates independent from full transcript serialization.
 
 ### iOS
 
+- Refreshed the host model catalog whenever the empty-conversation picker appears, and automatically discard an untouched new session when navigating back from it.
+- Added the host-selected Codex model to recent-session rows with backward-compatible “Codex default” labeling for older hosts.
 - Replaced one-second full-session-list polling with batched lightweight status polling and targeted authoritative session refreshes only after content changes, including queued turns that start without an idle gap.
 - Added automatic full-list polling fallback for older hosts that do not expose the additive status endpoint.
 

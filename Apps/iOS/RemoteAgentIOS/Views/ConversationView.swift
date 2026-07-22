@@ -24,6 +24,7 @@ struct ConversationView: View {
               description: Text("Ask the agent to inspect, explain, or change this project.")
             )
             .padding(.top, 72)
+            SessionModelPicker(session: session)
           } else {
             ForEach(session.messages) { message in
               MessageRow(
@@ -207,6 +208,40 @@ struct ConversationView: View {
         name: URL(fileURLWithPath: session.projectPath).lastPathComponent,
         path: session.projectPath
       )
+  }
+}
+
+private struct SessionModelPicker: View {
+  @EnvironmentObject private var model: AppModel
+  let session: AgentSession
+
+  private var selection: Binding<String> {
+    Binding(
+      get: { session.codexModel ?? "" },
+      set: { modelID in
+        Task { await model.setSessionCodexModel(session.id, codexModel: modelID) }
+      }
+    )
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Picker("Model", selection: selection) {
+        Text("Codex default").tag("")
+        ForEach(model.codexModels) { option in
+          Text(option.displayName).tag(option.id)
+        }
+      }
+      .pickerStyle(.menu)
+      if let option = model.codexModels.first(where: { $0.id == session.codexModel }) {
+        Text(option.description)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .padding(.horizontal, 24)
+    .accessibilityHint("Choose the Codex model before sending the first prompt")
+    .task { await model.refreshCodexModels() }
   }
 }
 

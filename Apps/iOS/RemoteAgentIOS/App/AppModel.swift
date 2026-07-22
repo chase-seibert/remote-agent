@@ -91,6 +91,8 @@ final class AppModel: ObservableObject {
   @Published private(set) var connectionState: ConnectionState = .loading
   @Published private(set) var projects: [AgentProject] = []
   @Published private(set) var sessions: [AgentSession] = []
+  @Published private(set) var codexModels: [CodexModelOption] = []
+  @Published private(set) var isRefreshingCodexModels = false
   @Published private(set) var projectCommandConfigurations:
     [UUID: ProjectCommandConfigurationResponse] = [:]
   @Published private(set) var runningProjectCommandSessionIDs: Set<UUID> = []
@@ -112,6 +114,7 @@ final class AppModel: ObservableObject {
   private var pollTask: OperationHandle?
   private var unreadBadgeSyncTask: Task<Void, Never>?
   private var sendingSessionIDs: Set<UUID> = []
+  private var newlyCreatedSessionIDs: Set<UUID> = []
   private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
   private var pendingCompletionNotifications = 0
   private var appIsActive = true
@@ -468,6 +471,7 @@ final class AppModel: ObservableObject {
       projectCommandConfigurations = [:]
       runningProjectCommandSessionIDs = []
       let completionTasks = applySnapshot(projects: snapshot.0, sessions: snapshot.1)
+      codexModels = (try? await proposedClient.models()) ?? []
       connectionState = .connected(version: health.version)
       logConnectionDiagnostic("Connected with protocol version \(health.version)")
       await migrateLegacyQueuedPrompts(using: proposedClient, generation: generation)
@@ -632,6 +636,7 @@ final class AppModel: ObservableObject {
       guard refreshHandle?.id == handleID else { return }
       protocolVersion = health.version
       let completionTasks = applySnapshot(projects: snapshot.0, sessions: snapshot.1)
+      codexModels = (try? await client.models()) ?? codexModels
       connectionState = .connected(version: health.version)
       await migrateLegacyQueuedPrompts(using: client, generation: context.generation)
       try Task.checkCancellation()
@@ -776,6 +781,7 @@ final class AppModel: ObservableObject {
         draftStore.saveQueuedPrompts([], serverIdentifier: serverIdentifier, sessionID: id)
       }
       sessions.removeAll { $0.id == id }
+      newlyCreatedSessionIDs.remove(id)
       if selectedSessionID == id { selectedSessionID = nil }
       syncUnreadSessionBadge()
       reconcileBackgroundRefreshState()
@@ -792,14 +798,19 @@ final class AppModel: ObservableObject {
     }
   }
 
-  func createSession(projectID: String) async {
+  var suggestedCodexModel: String? {
+    sessions.sorted { $0.updatedAt > $1.updatedAt }.compactMap(\.codexModel).first
+  }
+
+  func createSession(projectID: String, codexModel: String? = nil) async {
     guard projects.contains(where: { $0.id == projectID }), client != nil else { return }
     do {
       let session = try await withCurrentClient { client in
-        try await client.createSession(projectID: projectID)
+        try await client.createSession(projectID: projectID, codexModel: codexModel)
       }
       replaceSession(session)
       selectedSessionID = session.id
+      newlyCreatedSessionIDs.insert(session.id)
       connectionState = .connected(version: protocolVersion)
     } catch is CancellationError {
     } catch {
@@ -807,6 +818,29 @@ final class AppModel: ObservableObject {
       if case RemoteAPIError.unreachable = error {
         connectionState = .failed(message: error.localizedDescription)
       }
+    }
+  }
+
+  func setSessionCodexModel(_ id: UUID, codexModel: String?) async {
+    do {
+      let session = try await withCurrentClient { client in
+        try await client.setSessionCodexModel(id: id, codexModel: codexModel)
+      }
+      replaceSession(session)
+    } catch {
+      presentedError = error.localizedDescription
+    }
+  }
+
+  func refreshCodexModels() async {
+    guard client != nil, !isRefreshingCodexModels else { return }
+    isRefreshingCodexModels = true
+    defer { isRefreshingCodexModels = false }
+    do {
+      codexModels = try await withCurrentClient { client in try await client.models() }
+    } catch {
+      guard codexModels.isEmpty else { return }
+      presentedError = "Could not load models from the Mac: \(error.localizedDescription)"
     }
   }
 
@@ -1131,8 +1165,24 @@ final class AppModel: ObservableObject {
   }
 
   func saveDraft(_ value: String, sessionID: UUID) {
+    if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      newlyCreatedSessionIDs.remove(sessionID)
+    }
     guard let serverIdentifier = configuration?.serverIdentifier else { return }
     draftStore.save(value, serverIdentifier: serverIdentifier, sessionID: sessionID)
+  }
+
+  func discardUntouchedNewSession(_ id: UUID) async {
+    guard newlyCreatedSessionIDs.contains(id) else { return }
+    guard let session = sessions.first(where: { $0.id == id }),
+      session.messages.isEmpty,
+      session.queuedPrompts.isEmpty,
+      draft(sessionID: id).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      newlyCreatedSessionIDs.remove(id)
+      return
+    }
+    _ = await deleteSession(id)
   }
 
   private func enqueuePromptOnHost(

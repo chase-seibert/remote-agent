@@ -14,7 +14,7 @@ struct RootView: View {
         ConversationView(
           session: session,
           showingConnectionSettings: $showingConnectionSettings,
-          backToSessions: showSessions,
+          backToSessions: { showSessions(from: session.id) },
           scrollRequestID: conversationScrollRequestID
         )
         .id(session.id)
@@ -54,7 +54,8 @@ struct RootView: View {
     }
   }
 
-  private func showSessions() {
+  private func showSessions(from sessionID: UUID) {
+    Task { await model.discardUntouchedNewSession(sessionID) }
     withAnimation {
       model.selectSession(nil)
       preferredCompactColumn = .sidebar

@@ -85,6 +85,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   let projectID: String
   let projectPath: String
   var codexSessionID: String?
+  var codexModel: String?
   var title: String
   let createdAt: Date
   var updatedAt: Date
@@ -97,11 +98,12 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   var queuedPrompts: [QueuedPrompt]
   var contentRevision: UInt64
 
-  init(project: AgentProject) {
+  init(project: AgentProject, codexModel: String? = nil) {
     id = UUID()
     projectID = project.id
     projectPath = project.path
     codexSessionID = nil
+    self.codexModel = codexModel
     title = "New Session"
     createdAt = Date()
     updatedAt = Date()
@@ -120,6 +122,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case projectID
     case projectPath
     case codexSessionID
+    case codexModel
     case title
     case createdAt
     case updatedAt
@@ -139,6 +142,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     projectID = try container.decode(String.self, forKey: .projectID)
     projectPath = try container.decode(String.self, forKey: .projectPath)
     codexSessionID = try container.decodeIfPresent(String.self, forKey: .codexSessionID)
+    codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel)
     title = try container.decode(String.self, forKey: .title)
     createdAt = try container.decode(Date.self, forKey: .createdAt)
     updatedAt = try container.decode(Date.self, forKey: .updatedAt)

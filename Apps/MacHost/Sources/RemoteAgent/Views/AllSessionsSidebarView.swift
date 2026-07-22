@@ -45,7 +45,7 @@ struct AllSessionsSidebarView: View {
           }
         }
         Button("New Session in This Project") {
-          model.createSession(projectID: session.projectID)
+          model.requestNewSession(projectID: session.projectID)
         }
         if let project = model.projects.first(where: { $0.id == session.projectID }) {
           Button("Show Project in Finder") { model.showProjectInFinder(project) }
@@ -146,6 +146,9 @@ private struct SessionSidebarRow: View {
           Text(session.projectName)
             .lineLimit(1)
           Text("•")
+          Text(session.codexModel ?? "Codex default")
+            .lineLimit(1)
+          Text("•")
           Text(session.updatedAt.formatted(date: .abbreviated, time: .shortened))
             .lineLimit(1)
         }
@@ -186,6 +189,7 @@ private struct SessionSidebarRow: View {
   private var accessibilityValue: String {
     var values = [
       session.projectName,
+      session.codexModel ?? "Codex default",
       session.updatedAt.formatted(date: .abbreviated, time: .shortened),
     ]
     if isRunning { values.append("Running") }
@@ -199,54 +203,49 @@ private struct SessionSidebarRow: View {
 struct NewSessionProjectPickerView: View {
   @Environment(\.dismiss) private var dismiss
   @ObservedObject var model: AppModel
-  @State private var searchText = ""
-
-  private var visibleProjects: [AgentProject] {
-    let projects = ProjectSorter.byMostRecentSession(model.projects, sessions: model.sessions)
-    guard !searchText.isEmpty else { return projects }
-    return projects.filter {
-      $0.name.localizedCaseInsensitiveContains(searchText)
-        || $0.path.localizedCaseInsensitiveContains(searchText)
-    }
-  }
+  @State private var projectID: String?
+  @State private var codexModel = ""
 
   var body: some View {
     NavigationStack {
-      List(visibleProjects) { project in
-        Button {
-          if model.createSession(projectID: project.id) != nil {
-            dismiss()
+      Form {
+        Picker("Project", selection: $projectID) {
+          Text("Choose a project").tag(nil as String?)
+          ForEach(ProjectSorter.byMostRecentSession(model.projects, sessions: model.sessions)) {
+            project in
+            Text(project.name).tag(project.id as String?)
           }
-        } label: {
-          HStack(spacing: 10) {
-            Image(systemName: "folder")
-              .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-              Text(project.name)
-                .font(.headline)
-              Text(project.path)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        }
+        Picker("Model", selection: $codexModel) {
+          Text("Codex default").tag("")
+          ForEach(model.codexModels) { option in
+            Text(option.displayName).tag(option.id)
+          }
+        }
+        if let option = model.codexModels.first(where: { $0.id == codexModel }) {
+          Text(option.description).font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      .navigationTitle("New Session")
+      .onAppear {
+        projectID = model.pendingNewSessionProjectID ?? model.selectedProjectID
+        codexModel = model.mostRecentlyUsedCodexModel ?? ""
+      }
+      .task { await model.refreshCodexModels() }
+      .toolbar {
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Start Session") {
+            if model.createSession(projectID: projectID, codexModel: codexModel) != nil {
+              dismiss()
             }
           }
-          .contentShape(Rectangle())
+          .disabled(projectID == nil)
         }
-        .buttonStyle(.plain)
-      }
-      .navigationTitle("Choose a Project")
-      .searchable(text: $searchText, prompt: "Filter Projects")
-      .overlay {
-        if visibleProjects.isEmpty {
-          ContentUnavailableView.search(text: searchText)
-        }
-      }
-      .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button("Cancel") { dismiss() }
         }
       }
     }
-    .frame(width: 520, height: 500)
+    .frame(width: 440, height: 240)
   }
 }

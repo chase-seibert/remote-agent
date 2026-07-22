@@ -30,6 +30,7 @@ final class AppSettings: ObservableObject {
   private enum Key {
     static let projectsRoot = "projectsRoot"
     static let codexPath = "codexPath"
+    static let codexModel = "codexModel"
     static let apiEnabled = "apiEnabled"
     static let apiPort = "apiPort"
     static let apiToken = "apiToken"
@@ -45,6 +46,9 @@ final class AppSettings: ObservableObject {
     didSet { defaults.set(projectsRoot, forKey: Key.projectsRoot) }
   }
   @Published var codexPath: String { didSet { defaults.set(codexPath, forKey: Key.codexPath) } }
+  @Published var codexModel: String {
+    didSet { defaults.set(codexModel, forKey: Key.codexModel) }
+  }
   @Published var apiEnabled: Bool { didSet { defaults.set(apiEnabled, forKey: Key.apiEnabled) } }
   @Published var apiPort: Int { didSet { defaults.set(apiPort, forKey: Key.apiPort) } }
   @Published var apiToken: String { didSet { defaults.set(apiToken, forKey: Key.apiToken) } }
@@ -64,6 +68,7 @@ final class AppSettings: ObservableObject {
     codexPath =
       defaults.string(forKey: Key.codexPath)
       ?? "/Applications/ChatGPT.app/Contents/Resources/codex"
+    codexModel = defaults.string(forKey: Key.codexModel) ?? ""
     apiEnabled = defaults.object(forKey: Key.apiEnabled) as? Bool ?? true
     let storedPort = defaults.integer(forKey: Key.apiPort)
     apiPort = storedPort == 0 ? 8765 : storedPort

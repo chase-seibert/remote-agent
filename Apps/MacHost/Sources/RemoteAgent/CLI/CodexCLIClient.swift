@@ -1,4 +1,5 @@
 import Foundation
+import RemoteAgentProtocol
 
 typealias CodexEventHandler = @Sendable (CodexJSONLEvent) -> Void
 
@@ -8,8 +9,104 @@ protocol CodexSending: Sendable {
     projectPath: String,
     existingSessionID: String?,
     configuredExecutable: String,
+    model: String?,
     onEvent: CodexEventHandler?
   ) async throws -> CodexTurnResult
+}
+
+protocol CodexModelListing: Sendable {
+  func listModels(configuredExecutable: String) async throws -> [CodexModelOption]
+}
+
+enum CodexModelCatalogError: LocalizedError {
+  case invalidOutput
+
+  var errorDescription: String? {
+    "Codex returned an unreadable model catalog."
+  }
+}
+
+final class CodexModelCatalogClient: CodexModelListing, @unchecked Sendable {
+  func listModels(configuredExecutable: String) async throws -> [CodexModelOption] {
+    let executable = try CodexCLIClient.resolveExecutable(configuredExecutable)
+    return try await withCheckedThrowingContinuation { continuation in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          continuation.resume(returning: try self.run(executable: executable))
+        } catch {
+          continuation.resume(throwing: error)
+        }
+      }
+    }
+  }
+
+  private func run(executable: String) throws -> [CodexModelOption] {
+    let process = Process()
+    let stdout = Pipe()
+    let stderr = Pipe()
+    let collector = CodexProcessOutputCollector()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = ["debug", "models"]
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    stdout.fileHandleForReading.readabilityHandler = { handle in
+      _ = collector.appendStdout(handle.availableData)
+    }
+    stderr.fileHandleForReading.readabilityHandler = { handle in
+      collector.appendStderr(handle.availableData)
+    }
+
+    try process.run()
+    process.waitUntilExit()
+    stdout.fileHandleForReading.readabilityHandler = nil
+    stderr.fileHandleForReading.readabilityHandler = nil
+    _ = collector.appendStdout(stdout.fileHandleForReading.readDataToEndOfFile())
+    collector.appendStderr(stderr.fileHandleForReading.readDataToEndOfFile())
+
+    let (output, errorOutput) = collector.strings()
+    guard process.terminationStatus == 0 else {
+      let detail = errorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+      throw RemoteAgentError.commandFailed(
+        detail.isEmpty ? "Codex model discovery failed." : detail
+      )
+    }
+    return try Self.parse(data: Data(output.utf8))
+  }
+
+  static func parse(data: Data) throws -> [CodexModelOption] {
+    struct Catalog: Decodable { let models: [Model] }
+    struct Model: Decodable {
+      let slug: String
+      let displayName: String
+      let description: String
+      let visibility: String
+      let priority: Int
+
+      private enum CodingKeys: String, CodingKey {
+        case slug
+        case displayName = "display_name"
+        case description
+        case visibility
+        case priority
+      }
+    }
+
+    guard let catalog = try? JSONDecoder().decode(Catalog.self, from: data) else {
+      throw CodexModelCatalogError.invalidOutput
+    }
+    var seen = Set<String>()
+    return catalog.models
+      .filter { $0.visibility == "list" && seen.insert($0.slug).inserted }
+      .sorted {
+        $0.priority == $1.priority
+          ? $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+          : $0.priority < $1.priority
+      }
+      .map {
+        CodexModelOption(id: $0.slug, displayName: $0.displayName, description: $0.description)
+      }
+  }
 }
 
 final class CodexCLIClient: CodexSending, @unchecked Sendable {
@@ -20,9 +117,10 @@ final class CodexCLIClient: CodexSending, @unchecked Sendable {
     projectPath: String,
     existingSessionID: String?,
     configuredExecutable: String,
+    model: String?,
     onEvent: EventHandler? = nil
   ) async throws -> CodexTurnResult {
-    let executable = try resolveExecutable(configuredExecutable)
+    let executable = try Self.resolveExecutable(configuredExecutable)
     return try await withCheckedThrowingContinuation { continuation in
       DispatchQueue.global(qos: .userInitiated).async {
         do {
@@ -31,6 +129,7 @@ final class CodexCLIClient: CodexSending, @unchecked Sendable {
             prompt: prompt,
             projectPath: projectPath,
             existingSessionID: existingSessionID,
+            model: model,
             onEvent: onEvent
           )
           continuation.resume(returning: result)
@@ -46,6 +145,7 @@ final class CodexCLIClient: CodexSending, @unchecked Sendable {
     prompt: String,
     projectPath: String,
     existingSessionID: String?,
+    model: String?,
     onEvent: EventHandler?
   ) throws -> CodexTurnResult {
     let process = Process()
@@ -55,23 +155,11 @@ final class CodexCLIClient: CodexSending, @unchecked Sendable {
 
     process.executableURL = URL(fileURLWithPath: executable)
     process.currentDirectoryURL = URL(fileURLWithPath: projectPath)
-    if let existingSessionID {
-      process.arguments = [
-        "exec", "resume", "--json", "--skip-git-repo-check",
-        "-c", "hide_agent_reasoning=false",
-        "-c", "show_raw_agent_reasoning=false",
-        "-c", "model_reasoning_summary=auto",
-        existingSessionID, "-",
-      ]
-    } else {
-      process.arguments = [
-        "exec", "--json", "--color", "never", "--skip-git-repo-check",
-        "-c", "hide_agent_reasoning=false",
-        "-c", "show_raw_agent_reasoning=false",
-        "-c", "model_reasoning_summary=auto",
-        "-C", projectPath, "-",
-      ]
-    }
+    process.arguments = Self.arguments(
+      projectPath: projectPath,
+      existingSessionID: existingSessionID,
+      model: model
+    )
     process.standardOutput = stdout
     process.standardError = stderr
     process.standardInput = stdin
@@ -129,7 +217,29 @@ final class CodexCLIClient: CodexSending, @unchecked Sendable {
     return CodexTurnResult(sessionID: sessionID, response: response)
   }
 
-  private func resolveExecutable(_ configuredPath: String) throws -> String {
+  static func arguments(
+    projectPath: String,
+    existingSessionID: String?,
+    model: String?
+  ) -> [String] {
+    let modelArguments = model.map { ["--model", $0] } ?? []
+    if let existingSessionID {
+      return [
+        "exec", "resume", "--json", "--skip-git-repo-check",
+        "-c", "hide_agent_reasoning=false",
+        "-c", "show_raw_agent_reasoning=false",
+        "-c", "model_reasoning_summary=auto",
+      ] + modelArguments + [existingSessionID, "-"]
+    }
+    return [
+      "exec", "--json", "--color", "never", "--skip-git-repo-check",
+      "-c", "hide_agent_reasoning=false",
+      "-c", "show_raw_agent_reasoning=false",
+      "-c", "model_reasoning_summary=auto",
+    ] + modelArguments + ["-C", projectPath, "-"]
+  }
+
+  static func resolveExecutable(_ configuredPath: String) throws -> String {
     let manager = FileManager.default
     let candidates = [
       configuredPath,

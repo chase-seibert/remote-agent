@@ -221,6 +221,7 @@ final class RemoteAPIClientTests: XCTestCase {
           "projectID":"opaque",
           "projectPath":"/Users/example/project",
           "codexSessionID":null,
+          "codexModel":"gpt-example",
           "title":"Test",
           "createdAt":"2026-07-11T20:00:00Z",
           "updatedAt":"2026-07-11T20:00:01.123Z",
@@ -245,6 +246,7 @@ final class RemoteAPIClientTests: XCTestCase {
     XCTAssertEqual(result.id, sessionID)
     XCTAssertEqual(result.messages.first?.id, messageID)
     XCTAssertEqual(result.messages.first?.text, "Done")
+    XCTAssertEqual(result.codexModel, "gpt-example")
     XCTAssertTrue(result.isRunning)
     XCTAssertEqual(result.currentReasoning, "Inspecting the session pipeline.")
     XCTAssertEqual(result.contentRevision, 0)

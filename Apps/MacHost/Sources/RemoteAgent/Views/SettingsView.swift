@@ -29,6 +29,41 @@ struct SettingsView: View {
           TextField("Executable path", text: $settings.codexPath)
             .frame(width: 380)
         }
+        LabeledContent("Model") {
+          HStack {
+            Picker("Model", selection: $settings.codexModel) {
+              Text("Codex default").tag("")
+              ForEach(model.codexModels) { option in
+                Text(option.displayName).tag(option.id)
+              }
+              if !settings.codexModel.isEmpty,
+                !model.codexModels.contains(where: { $0.id == settings.codexModel })
+              {
+                Text("\(settings.codexModel) (Custom)").tag(settings.codexModel)
+              }
+            }
+            .labelsHidden()
+            .frame(width: 240)
+            if model.isRefreshingCodexModels {
+              ProgressView()
+                .controlSize(.small)
+            } else {
+              Button {
+                Task { await model.refreshCodexModels() }
+              } label: {
+                Image(systemName: "arrow.clockwise")
+              }
+              .help("Refresh models from Codex CLI")
+            }
+          }
+        }
+        LabeledContent("Custom model ID") {
+          TextField("Optional model identifier", text: $settings.codexModel)
+            .frame(width: 240)
+        }
+        Text(modelCatalogDescription)
+          .font(.caption)
+          .foregroundStyle(.secondary)
         Button("Refresh Projects") { Task { await model.refreshProjects() } }
       }
 
@@ -95,10 +130,25 @@ struct SettingsView: View {
     .formStyle(.grouped)
     .padding()
     .onChange(of: settings.apiEnabled) { _, _ in model.restartAPI() }
+    .onChange(of: settings.codexModel) { _, value in model.applyCodexModel(value) }
     .onChange(of: settings.apiPort) { _, _ in model.scheduleAPIRestart() }
     .onChange(of: settings.autoRelaunchAfterCrash) { _, _ in
       model.configureCrashRelaunch()
     }
+    .task { await model.refreshCodexModels() }
+  }
+
+  private var modelCatalogDescription: String {
+    if let error = model.codexModelCatalogError {
+      return
+        "Could not load models from Codex CLI: \(error) You can still enter a model ID manually."
+    }
+    if model.codexModels.isEmpty {
+      return
+        "Leave the model blank to use Codex configuration, or enter a model ID manually. The choice applies to every session."
+    }
+    return
+      "Models are loaded from the Codex CLI. Leave the model blank to use Codex configuration. The choice applies to every session."
   }
 
   private func chooseProjectsFolder() {

@@ -16,6 +16,9 @@ protocol RemoteAPIClientProtocol: Sendable {
   func documentContent(projectID: String, documentID: String) async throws
     -> ProjectDocumentContent
   func createSession(projectID: String) async throws -> AgentSession
+  func createSession(projectID: String, codexModel: String?) async throws -> AgentSession
+  func models() async throws -> [CodexModelOption]
+  func setSessionCodexModel(id: UUID, codexModel: String?) async throws -> AgentSession
   func sendMessage(_ text: String, sessionID: UUID) async throws -> AcceptedResponse
   func enqueuePrompt(_ text: String, sessionID: UUID) async throws -> QueuedPrompt
   func updateQueuedPrompt(_ promptID: UUID, text: String, sessionID: UUID) async throws
@@ -34,6 +37,15 @@ protocol RemoteAPIClientProtocol: Sendable {
 }
 
 extension RemoteAPIClientProtocol {
+  func models() async throws -> [CodexModelOption] { [] }
+
+  func createSession(projectID: String, codexModel _: String?) async throws -> AgentSession {
+    try await createSession(projectID: projectID)
+  }
+
+  func setSessionCodexModel(id _: UUID, codexModel _: String?) async throws -> AgentSession {
+    throw RemoteAPIError.notConnected
+  }
   func sessionStatuses(ids _: [UUID]) async throws -> [SessionStatusSnapshot] {
     throw RemoteAPIError.http(status: 404, detail: "Session status polling is unavailable")
   }
@@ -244,6 +256,15 @@ final class RemoteAPIClient: RemoteAPIClientProtocol, @unchecked Sendable {
     )
   }
 
+  func setSessionCodexModel(id: UUID, codexModel: String?) async throws -> AgentSession {
+    try await request(
+      path: RemoteAgentEndpoint.session(id),
+      method: "PATCH",
+      body: SessionUpdateRequest(codexModel: codexModel),
+      expectedStatus: 200
+    )
+  }
+
   func deleteSession(id: UUID) async throws -> AgentSession {
     try await request(
       path: RemoteAgentEndpoint.session(id),
@@ -277,12 +298,20 @@ final class RemoteAPIClient: RemoteAPIClientProtocol, @unchecked Sendable {
   }
 
   func createSession(projectID: String) async throws -> AgentSession {
+    try await createSession(projectID: projectID, codexModel: nil)
+  }
+
+  func createSession(projectID: String, codexModel: String?) async throws -> AgentSession {
     try await request(
       path: RemoteAgentEndpoint.sessions,
       method: "POST",
-      body: CreateSessionRequest(projectID: projectID),
+      body: CreateSessionRequest(projectID: projectID, codexModel: codexModel),
       expectedStatus: 201
     )
+  }
+
+  func models() async throws -> [CodexModelOption] {
+    try await request(path: RemoteAgentEndpoint.models)
   }
 
   func sendMessage(_ text: String, sessionID: UUID) async throws -> AcceptedResponse {
@@ -499,7 +528,6 @@ final class RemoteAPIClient: RemoteAPIClientProtocol, @unchecked Sendable {
     }
   }
 
-  private struct CreateSessionRequest: Encodable { let projectID: String }
   private struct SendMessageRequest: Encodable { let text: String }
 
   private static let dateWithFractionalSeconds: ISO8601DateFormatter = {

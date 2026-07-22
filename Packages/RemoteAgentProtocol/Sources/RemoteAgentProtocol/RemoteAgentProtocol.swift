@@ -10,6 +10,7 @@ public enum RemoteAgentEndpoint {
   public static let sessions = "/v1/sessions"
   public static let sessionStatus = "/v1/session-status"
   public static let documents = "/v1/documents"
+  public static let models = "/v1/models"
 
   public static func session(_ id: UUID) -> String {
     "\(sessions)/\(id.uuidString)"
@@ -45,6 +46,28 @@ public enum RemoteAgentEndpoint {
 
   public static func document(_ id: String) -> String {
     "\(documents)/\(id)"
+  }
+}
+
+public struct CodexModelOption: Identifiable, Codable, Equatable, Hashable, Sendable {
+  public let id: String
+  public let displayName: String
+  public let description: String
+
+  public init(id: String, displayName: String, description: String) {
+    self.id = id
+    self.displayName = displayName
+    self.description = description
+  }
+}
+
+public struct CreateSessionRequest: Codable, Equatable, Sendable {
+  public let projectID: String
+  public let codexModel: String?
+
+  public init(projectID: String, codexModel: String? = nil) {
+    self.projectID = projectID
+    self.codexModel = codexModel
   }
 }
 
@@ -118,15 +141,18 @@ public struct SessionUpdateRequest: Codable, Equatable, Sendable {
   public let title: String?
   public let isPinned: Bool?
   public let selectedMakeTarget: String?
+  public let codexModel: String?
 
   public init(
     title: String? = nil,
     isPinned: Bool? = nil,
-    selectedMakeTarget: String? = nil
+    selectedMakeTarget: String? = nil,
+    codexModel: String? = nil
   ) {
     self.title = title
     self.isPinned = isPinned
     self.selectedMakeTarget = selectedMakeTarget
+    self.codexModel = codexModel
   }
 }
 

@@ -28,6 +28,7 @@ private actor CapturingCommitMessageGenerator: CommitMessageGenerating {
 
 private actor ControllableCodexSender: CodexSending {
   private(set) var prompts: [String] = []
+  private(set) var models: [String?] = []
   private var firstPromptContinuation: CheckedContinuation<Void, Never>?
 
   func send(
@@ -35,9 +36,11 @@ private actor ControllableCodexSender: CodexSending {
     projectPath _: String,
     existingSessionID _: String?,
     configuredExecutable _: String,
+    model: String?,
     onEvent _: CodexEventHandler?
   ) async throws -> CodexTurnResult {
     prompts.append(prompt)
+    models.append(model)
     let promptNumber = prompts.count
     if promptNumber == 1 {
       await withCheckedContinuation { continuation in
@@ -65,6 +68,49 @@ struct RemoteAgentTests {
 
     #expect(parser.sessionID == "019abc")
     #expect(parser.assistantMessages == ["Done."])
+  }
+
+  @Test func codexArgumentsApplyModelToNewAndResumedTurns() {
+    let newTurn = CodexCLIClient.arguments(
+      projectPath: "/tmp/example",
+      existingSessionID: nil,
+      model: "gpt-example"
+    )
+    let resumedTurn = CodexCLIClient.arguments(
+      projectPath: "/tmp/example",
+      existingSessionID: "thread-123",
+      model: "gpt-example"
+    )
+    let defaultTurn = CodexCLIClient.arguments(
+      projectPath: "/tmp/example",
+      existingSessionID: nil,
+      model: nil
+    )
+
+    #expect(newTurn.joined(separator: " ").contains("--model gpt-example"))
+    #expect(resumedTurn.joined(separator: " ").contains("--model gpt-example"))
+    #expect(!defaultTurn.contains("--model"))
+    #expect(resumedTurn.suffix(2) == ["thread-123", "-"])
+  }
+
+  @Test func codexModelCatalogFiltersAndOrdersVisibleModels() throws {
+    let data = Data(
+      """
+      {
+        "models": [
+          {"slug":"hidden","display_name":"Hidden","description":"No","visibility":"hide","priority":0},
+          {"slug":"gpt-b","display_name":"GPT B","description":"Second","visibility":"list","priority":2},
+          {"slug":"gpt-a","display_name":"GPT A","description":"First","visibility":"list","priority":1},
+          {"slug":"gpt-a","display_name":"Duplicate","description":"No","visibility":"list","priority":3}
+        ]
+      }
+      """.utf8
+    )
+
+    let models = try CodexModelCatalogClient.parse(data: data)
+
+    #expect(models.map(\.id) == ["gpt-a", "gpt-b"])
+    #expect(models.map(\.displayName) == ["GPT A", "GPT B"])
   }
 
   @Test func parsesCompletedReasoningEvent() throws {
@@ -482,6 +528,7 @@ struct RemoteAgentTests {
     var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
     object.removeValue(forKey: "isUnread")
     object.removeValue(forKey: "isPinned")
+    object.removeValue(forKey: "codexModel")
     object.removeValue(forKey: "contentRevision")
 
     let decoder = JSONDecoder()
@@ -493,7 +540,62 @@ struct RemoteAgentTests {
 
     #expect(!decoded.isUnread)
     #expect(!decoded.isPinned)
+    #expect(decoded.codexModel == nil)
     #expect(decoded.contentRevision == 0)
+  }
+
+  @MainActor
+  @Test func codexModelSettingPersists() {
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let settings = AppSettings(defaults: defaults)
+    #expect(settings.codexModel.isEmpty)
+    settings.codexModel = "gpt-example"
+
+    #expect(AppSettings(defaults: defaults).codexModel == "gpt-example")
+  }
+
+  @MainActor
+  @Test func codexModelDefaultsFutureSessionsWithoutChangingExistingSessions() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let projectDirectory = directory.appendingPathComponent("Example", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(
+      at: projectDirectory,
+      withIntermediateDirectories: true
+    )
+    let suiteName = "RemoteAgentTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let settings = AppSettings(defaults: defaults)
+    settings.projectsRoot = directory.path
+    let codex = ControllableCodexSender()
+    let model = AppModel(
+      settings: settings,
+      store: SessionStore(fileURL: directory.appendingPathComponent("sessions.json")),
+      codex: codex
+    )
+    await model.refreshProjects()
+    let project = try #require(model.projects.first)
+    let existing = try #require(model.createSession(projectID: project.id, select: false))
+
+    settings.codexModel = "  gpt-example  "
+    model.applyCodexModel(settings.codexModel)
+    let future = try #require(model.createSession(projectID: project.id, select: false))
+    #expect(model.sessions.first(where: { $0.id == existing.id })?.codexModel == nil)
+    #expect(future.codexModel == "gpt-example")
+
+    let turn = Task { await model.sendPrompt("Test model", to: existing.id) }
+    for _ in 0..<100 {
+      if await codex.models.count == 1 { break }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(await codex.models == [nil])
+    await codex.releaseFirstPrompt()
+    await turn.value
   }
 
   @MainActor

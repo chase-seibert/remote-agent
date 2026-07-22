@@ -207,6 +207,9 @@ private struct RecentSessionRow: View {
           Text(projectName)
             .lineLimit(1)
           Text("•")
+          Text(session.codexModel ?? "Codex default")
+            .lineLimit(1)
+          Text("•")
           Text(session.updatedAt.formatted(date: .abbreviated, time: .shortened))
             .lineLimit(1)
         }
@@ -236,7 +239,11 @@ private struct RecentSessionRow: View {
   }
 
   private var accessibilityValue: String {
-    var values = [projectName, session.updatedAt.formatted(date: .abbreviated, time: .shortened)]
+    var values = [
+      projectName,
+      session.codexModel ?? "Codex default",
+      session.updatedAt.formatted(date: .abbreviated, time: .shortened),
+    ]
     if session.hasActiveWork { values.append("Running") }
     if session.messages.last?.state == .failed { values.append("Failed") }
     if session.isPinned { values.append("Pinned") }

@@ -49,6 +49,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
   let projectID: String
   let projectPath: String
   let codexSessionID: String?
+  let codexModel: String?
   let title: String
   let createdAt: Date
   let updatedAt: Date
@@ -66,6 +67,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     projectID: String,
     projectPath: String,
     codexSessionID: String?,
+    codexModel: String? = nil,
     title: String,
     createdAt: Date,
     updatedAt: Date,
@@ -82,6 +84,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     self.projectID = projectID
     self.projectPath = projectPath
     self.codexSessionID = codexSessionID
+    self.codexModel = codexModel
     self.title = title
     self.createdAt = createdAt
     self.updatedAt = updatedAt
@@ -100,6 +103,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     case projectID
     case projectPath
     case codexSessionID
+    case codexModel
     case title
     case createdAt
     case updatedAt
@@ -119,6 +123,7 @@ struct AgentSession: Identifiable, Codable, Hashable, Sendable {
     projectID = try container.decode(String.self, forKey: .projectID)
     projectPath = try container.decode(String.self, forKey: .projectPath)
     codexSessionID = try container.decodeIfPresent(String.self, forKey: .codexSessionID)
+    codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel)
     title = try container.decode(String.self, forKey: .title)
     createdAt = try container.decode(Date.self, forKey: .createdAt)
     updatedAt = try container.decode(Date.self, forKey: .updatedAt)
